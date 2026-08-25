@@ -4,7 +4,17 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置与安装介质助手。它
 
 当前仓库处于 `v0.1.5 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、兼容性判断、锁定组件下载、候选 EFI 组装、结构检查和向空目录安全复制。它不会格式化磁盘，也不会覆盖非空目录。
 
-项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)　Windows 安装包：[Releases](https://github.com/dnqf/efi-forge/releases)
+项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
+
+## 下载
+
+- 首选：[GitHub Releases 官方下载](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
+- GitHub Release 资产无法访问时：[jsDelivr 固定提交备用 ZIP](https://cdn.jsdelivr.net/gh/dnqf/efi-forge@e4cacfc942a842167142f87945c079363718b67a/EFI-Forge_0.1.5_x64-setup.zip)
+
+不要使用来源不明的 GitHub 加速站。备用链接由 jsDelivr 从本项目公开下载分支按不可变提交哈希分发；解压后仍应核对安装程序哈希。
+
+- EXE SHA-256：`3BA8930958F375DE70E037939CFAE8BB6DCCD6B86D1390E44B05222C8EFCC0E0`
+- 备用 ZIP SHA-256：`4C3EF23C9598D056BFCBBDC139088F2174F3C4B9CB5F41139A39ECAE521761C7`
 
 ## 当前能力
 
