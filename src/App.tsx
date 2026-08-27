@@ -1796,7 +1796,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.9</span>
+        <span>EFI Forge v0.1.10-dev</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

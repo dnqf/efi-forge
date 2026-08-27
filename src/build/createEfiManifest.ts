@@ -33,6 +33,7 @@ function hardwareKey(report: HardwareReport): string {
     report.system.kind,
     report.system.manufacturer ?? "unknown",
     report.system.productName ?? "unknown",
+    report.system.machineType ?? "unknown-machine-type",
     report.cpu.vendor,
     report.cpu.generation,
     report.cpu.family,
@@ -41,6 +42,7 @@ function hardwareKey(report: HardwareReport): string {
     report.board.vendor,
     report.board.model,
     report.board.biosVersion || "unknown-bios",
+    report.board.biosDate ?? "unknown-bios-date",
     ...deviceKeys("gpu", report.gpus),
     ...deviceKeys("network", report.network),
     ...deviceKeys("audio", report.audio),
@@ -50,7 +52,7 @@ function hardwareKey(report: HardwareReport): string {
     .toLowerCase();
 }
 
-function lockedComponentsFor(plan: BuildPlan): LockedComponent[] {
+function requestedFilesFor(plan: BuildPlan): Set<string> {
   const requestedFiles = new Set([
     "OpenCore.efi",
     ...plan.drivers,
@@ -59,6 +61,10 @@ function lockedComponentsFor(plan: BuildPlan): LockedComponent[] {
   ]);
   if (plan.platform === "amd-zen") requestedFiles.add("AMD-Vanilla-patches.plist");
 
+  return requestedFiles;
+}
+
+function lockedComponentsFor(requestedFiles: Set<string>): LockedComponent[] {
   return lock.components.filter((component) =>
     component.provides.some((file) => requestedFiles.has(file)),
   );
@@ -72,10 +78,18 @@ export function createEfiManifest(
 ): EfiBuildManifest | null {
   if (!plan || !compatibility.canContinue) return null;
 
-  const components = lockedComponentsFor(plan);
-  const allComponentsLocked = components.every(
-    (component) => /^[a-f0-9]{64}$/.test(component.sha256) && component.size > 0,
-  );
+  const requestedFiles = requestedFilesFor(plan);
+  const components = lockedComponentsFor(requestedFiles);
+  const providedFiles = new Set(components.flatMap((component) => component.provides));
+  const missingLockedFiles = [...requestedFiles]
+    .filter((file) => !providedFiles.has(file))
+    .sort();
+  const invalidLockedComponents = components
+    .filter((component) => !/^[a-f0-9]{64}$/.test(component.sha256) || component.size <= 0)
+    .map((component) => component.name)
+    .sort();
+  const allComponentsLocked = missingLockedFiles.length === 0
+    && invalidLockedComponents.length === 0;
   const blockedCount = compatibility.findings.filter(
     (finding) => finding.status === "blocked",
   ).length;
@@ -116,7 +130,11 @@ export function createEfiManifest(
         id: "components.sha256-locked",
         label: "官方组件版本与哈希已锁定",
         status: allComponentsLocked ? "passed" : "failed",
-        detail: `${components.length} 个官方 Release 资产进入构建清单。`,
+        detail: missingLockedFiles.length > 0
+          ? `组件锁缺少计划资源：${missingLockedFiles.join("、")}。构建必须停止。`
+          : invalidLockedComponents.length > 0
+            ? `组件锁包含无效哈希或文件大小：${invalidLockedComponents.join("、")}。构建必须停止。`
+          : `${components.length} 个官方 Release 资产进入构建清单。`,
       },
       {
         id: "config.ocvalidate",

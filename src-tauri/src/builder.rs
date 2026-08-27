@@ -186,7 +186,7 @@ fn validate_manifest_lock(manifest: &EfiBuildManifest) -> Result<(), String> {
         .iter()
         .flat_map(|component| component.provides.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
-    let mut required = BTreeSet::from(["OpenCore.efi"]);
+    let mut required = BTreeSet::from(["OpenCore.efi", "Lilu.kext", "VirtualSMC.kext"]);
     required.extend(manifest.acpi.iter().map(String::as_str));
     required.extend(manifest.drivers.iter().map(String::as_str));
     if manifest.auto_config_supported && manifest.platform == "amd-zen" {
@@ -2140,6 +2140,38 @@ mod tests {
     #[test]
     fn safe_name_removes_path_separators() {
         assert_eq!(safe_name("../coffee/lake"), "---coffee-lake");
+    }
+
+    #[test]
+    fn rejects_a_manifest_without_core_kexts() {
+        let lock: TestComponentLock =
+            serde_json::from_str(include_str!("../../src/data/components.lock.json")).unwrap();
+        let components = lock
+            .components
+            .into_iter()
+            .filter(|component| component.id == "opencore")
+            .collect();
+        let manifest = EfiBuildManifest {
+            schema_version: 1,
+            target_mac_os: "14".into(),
+            profile: "manual-uefi-candidate".into(),
+            platform: "unknown".into(),
+            cpu_core_count: 4,
+            chipset: "unknown".into(),
+            smbios_model: "iMac19,1".into(),
+            igpu_platform_id: None,
+            boot_args: vec!["-v".into()],
+            setup_virtual_map: None,
+            auto_config_supported: false,
+            components,
+            acpi: Vec::new(),
+            drivers: vec!["OpenRuntime.efi".into(), "OpenHfsPlus.efi".into()],
+            notes: Vec::new(),
+        };
+
+        let error = validate_manifest_lock(&manifest).unwrap_err();
+        assert!(error.contains("Lilu.kext"));
+        assert!(error.contains("VirtualSMC.kext"));
     }
 
     #[test]
