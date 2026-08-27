@@ -2,19 +2,19 @@
 
 EFI Forge 是一个 Windows-first 的 OpenCore 配置与安装介质助手。它通过硬件扫描、可追溯的兼容性规则和固定版本的可信上游组件，为目标电脑生成专属 EFI 构建计划。
 
-当前源码正在开发 `v0.1.9 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置和向空目录复制。已发布的稳定下载仍为 `v0.1.5`。工具不会格式化磁盘，也不会覆盖非空目录。
+当前公开测试版为 `v0.1.9 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、真机验证证据和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
 ## 下载
 
-- 首选：[GitHub Releases 官方下载](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
-- GitHub Release 资产无法访问时：[jsDelivr 固定提交备用 ZIP](https://cdn.jsdelivr.net/gh/dnqf/efi-forge@e4cacfc942a842167142f87945c079363718b67a/EFI-Forge_0.1.5_x64-setup.zip)
+- 版本说明：[EFI Forge v0.1.9 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)
+- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.9/EFI-Forge_0.1.9_x64-setup.exe)
+- 历史版本：[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
 
-不要使用来源不明的 GitHub 加速站。备用链接由 jsDelivr 从本项目公开下载分支按不可变提交哈希分发；解压后仍应核对安装程序哈希。
+不要使用来源不明的 GitHub 加速站。安装后仍应核对安装程序哈希；当前 Alpha 尚未数字签名，Windows 可能显示未知发布者。
 
-- EXE SHA-256：`3BA8930958F375DE70E037939CFAE8BB6DCCD6B86D1390E44B05222C8EFCC0E0`
-- 备用 ZIP SHA-256：`4C3EF23C9598D056BFCBBDC139088F2174F3C4B9CB5F41139A39ECAE521761C7`
+- EXE SHA-256：`A6F087F85EF73F182D2BA2A729FF80F7236434E09895944303C69F18D23A3AFD`
 
 ## 当前能力
 
