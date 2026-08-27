@@ -1,4 +1,5 @@
 mod builder;
+mod components;
 mod hardware;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,7 +20,10 @@ pub fn run() {
             builder::build_efi_scaffold,
             builder::select_usb_map,
             builder::validate_custom_efi,
+            builder::merge_efi_sources,
             builder::copy_efi_to_empty_target,
+            components::select_component_source,
+            components::merge_component_selections,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

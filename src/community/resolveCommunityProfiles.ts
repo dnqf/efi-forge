@@ -4,6 +4,7 @@ import type {
   HardwareReport,
   MacOSVersion,
 } from "../domain/types";
+import { validateCommunityRegistry } from "./validateCommunityRegistry";
 
 function includesAny(value: string, candidates: string[]): boolean {
   const normalized = value.toLowerCase();
@@ -27,6 +28,14 @@ export function resolveCommunityProfiles(
   const pciIds = allPciIds(report);
 
   return profiles.map((profile) => {
+    const registryIssues = validateCommunityRegistry([profile]);
+    if (registryIssues.length > 0) {
+      return {
+        profile,
+        status: "incompatible",
+        reasons: registryIssues.map((issue) => `社区条目未通过准入：${issue.message}`),
+      };
+    }
     const baseMatches =
       profile.machine.kind === report.system.kind &&
       includesAny(manufacturer, profile.machine.manufacturerIncludes) &&
@@ -61,4 +70,3 @@ export function resolveCommunityProfiles(
     };
   });
 }
-

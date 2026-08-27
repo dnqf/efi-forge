@@ -1,0 +1,51 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-nsis:
+    name: Build unsigned Windows NSIS candidate
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:catalog
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: npm run desktop:build
+      - name: Generate SHA-256 manifest
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer was not generated." }
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash
+          "$digest *$($installer.Name)" | Set-Content -LiteralPath "src-tauri/target/release/bundle/nsis/SHA256SUMS.txt" -Encoding ascii
+          "### Unsigned release candidate" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "- $($installer.Name)" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "- SHA-256: ``$digest``" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: efi-forge-windows-unsigned-candidate
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

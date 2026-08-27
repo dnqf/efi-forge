@@ -70,16 +70,18 @@ pub struct ScaffoldResult {
     warnings: Vec<String>,
     ready_for_install: bool,
     validation_level: &'static str,
+    config_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EfiValidationResult {
-    root_path: String,
-    valid: bool,
-    errors: Vec<String>,
+    pub(crate) root_path: String,
+    pub(crate) valid: bool,
+    pub(crate) errors: Vec<String>,
     warnings: Vec<String>,
     validation_level: &'static str,
+    config_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +96,21 @@ pub struct InstallCopyResult {
 pub struct UsbMapSelection {
     source_path: String,
     bundle_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EfiMergeResult {
+    output_path: String,
+    preferred_source: String,
+    files_from_preferred: usize,
+    missing_files_added: usize,
+    conflicts_kept: usize,
+    added_files: Vec<String>,
+    inactive_added_files: Vec<String>,
+    warnings: Vec<String>,
+    validation_level: &'static str,
+    config_sha256: String,
 }
 
 #[tauri::command]
@@ -206,7 +223,18 @@ fn validate_automatic_platform(manifest: &EfiBuildManifest) -> Result<(), String
     };
 
     match manifest.platform.as_str() {
-        "amd-zen" if manifest.chipset == "B450" => require_acpi(&["SSDT-EC-USBX-DESKTOP.aml"]),
+        "amd-zen"
+            if matches!(
+                manifest.chipset.as_str(),
+                "A520" | "B450" | "B550" | "X470" | "X570"
+            ) =>
+        {
+            if matches!(manifest.chipset.as_str(), "A520" | "B550") {
+                require_acpi(&["SSDT-EC-USBX-DESKTOP.aml", "SSDT-CPUR.aml"])
+            } else {
+                require_acpi(&["SSDT-EC-USBX-DESKTOP.aml"])
+            }
+        }
         "intel-coffee-lake"
             if matches!(
                 manifest.chipset.as_str(),
@@ -288,6 +316,48 @@ pub fn copy_efi_to_empty_target(source_root: String) -> Result<Option<InstallCop
     copy_to_empty_target(&source, &target).map(Some)
 }
 
+#[tauri::command]
+pub fn merge_efi_sources(
+    generated_root: String,
+    custom_root: String,
+    preferred_source: String,
+) -> Result<Option<EfiMergeResult>, String> {
+    let generated = PathBuf::from(generated_root);
+    let custom = PathBuf::from(custom_root);
+    let generated_validation = validate_efi_root(&generated)?;
+    let custom_validation = validate_efi_root(&custom)?;
+    if !generated_validation.valid {
+        return Err(format!(
+            "项目生成 EFI 结构已失效：{}",
+            generated_validation.errors.join("；")
+        ));
+    }
+    if !custom_validation.valid {
+        return Err(format!(
+            "用户 EFI 结构损坏，不能参与融合：{}",
+            custom_validation.errors.join("；")
+        ));
+    }
+
+    let generated = PathBuf::from(generated_validation.root_path);
+    let custom = PathBuf::from(custom_validation.root_path);
+    if generated == custom {
+        return Err("项目生成 EFI 与用户 EFI 不能是同一目录。".into());
+    }
+    if !matches!(preferred_source.as_str(), "generated" | "custom") {
+        return Err("未知的 EFI 冲突优先级。".into());
+    }
+
+    let Some(parent) = rfd::FileDialog::new()
+        .set_title("选择融合 EFI 副本的保存位置")
+        .pick_folder()
+    else {
+        return Ok(None);
+    };
+
+    merge_efi_roots(&generated, &custom, &parent, &preferred_source).map(Some)
+}
+
 fn build_scaffold(
     parent: &Path,
     manifest: &EfiBuildManifest,
@@ -313,6 +383,12 @@ fn build_scaffold(
     }
     let assembly = build_result.unwrap();
 
+    let config_sha256 = if assembly.ready_for_install {
+        Some(hash_file_sha256(&staging.join("EFI/OC/config.plist"))?)
+    } else {
+        None
+    };
+
     fs::rename(&staging, &output).map_err(|error| {
         let _ = fs::remove_dir_all(&staging);
         format!("无法完成暂存包写入：{error}")
@@ -328,6 +404,7 @@ fn build_scaffold(
         } else {
             "components-only"
         },
+        config_sha256,
     })
 }
 
@@ -1074,8 +1151,48 @@ fn apply_smbios(root: &Path, config: &mut plist::Value, model: &str) -> Result<(
 fn run_ocvalidate(root: &Path) -> Result<(), String> {
     let validator = root.join("_tools/ocvalidate.exe");
     let config = root.join("EFI/OC/config.plist");
-    let output = Command::new(&validator)
-        .arg(&config)
+    run_ocvalidate_binary(&validator, &config)
+}
+
+pub(crate) fn run_locked_ocvalidate(root: &Path) -> Result<(), String> {
+    let lock: ComponentLockFile =
+        serde_json::from_str(include_str!("../../src/data/components.lock.json"))
+            .map_err(|error| format!("内置组件锁无法解析：{error}"))?;
+    let component = lock
+        .components
+        .iter()
+        .find(|component| component.id == "opencore")
+        .ok_or_else(|| "组件锁中缺少 OpenCore。".to_string())?;
+    let cache = std::env::temp_dir()
+        .join("efi-forge")
+        .join("component-cache");
+    fs::create_dir_all(&cache).map_err(|error| format!("无法创建组件缓存：{error}"))?;
+    let archive_path = ensure_component(&cache, component)?;
+    let archive_file = File::open(&archive_path)
+        .map_err(|error| format!("无法打开已验证的 OpenCore 组件：{error}"))?;
+    let mut archive = ZipArchive::new(archive_file)
+        .map_err(|error| format!("已验证的 OpenCore 组件无法解压：{error}"))?;
+    let validator_root = std::env::temp_dir()
+        .join("efi-forge")
+        .join(format!("ocvalidate-{}", Uuid::new_v4()));
+    fs::create_dir_all(&validator_root)
+        .map_err(|error| format!("无法创建 ocvalidate 暂存目录：{error}"))?;
+    let validator = validator_root.join("ocvalidate.exe");
+    let result = (|| -> Result<(), String> {
+        extract_file(
+            &mut archive,
+            "Utilities/ocvalidate/ocvalidate.exe",
+            &validator,
+        )?;
+        run_ocvalidate_binary(&validator, &root.join("EFI/OC/config.plist"))
+    })();
+    let _ = fs::remove_dir_all(&validator_root);
+    result
+}
+
+fn run_ocvalidate_binary(validator: &Path, config: &Path) -> Result<(), String> {
+    let output = Command::new(validator)
+        .arg(config)
         .output()
         .map_err(|error| format!("无法运行同版本 ocvalidate：{error}"))?;
     if output.status.success() {
@@ -1271,6 +1388,22 @@ fn verify_file(path: &Path, component: &LockedComponent) -> Result<bool, String>
     Ok(hex::encode(hasher.finalize()).eq_ignore_ascii_case(&component.sha256))
 }
 
+fn hash_file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|error| format!("无法读取文件哈希：{error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("计算文件哈希失败：{error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 fn extract_file(
     archive: &mut ZipArchive<File>,
     source: &str,
@@ -1337,7 +1470,7 @@ fn extract_directory(
     Ok(written)
 }
 
-fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, String> {
+pub(crate) fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, String> {
     let selected = selected
         .canonicalize()
         .map_err(|error| format!("无法读取所选目录：{error}"))?;
@@ -1375,6 +1508,10 @@ fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, String> {
     }
 
     let config = oc.join("config.plist");
+    let config_sha256 = config
+        .is_file()
+        .then(|| hash_file_sha256(&config))
+        .transpose()?;
     if config.is_file() {
         match plist::Value::from_file(&config) {
             Ok(value) => validate_config_references(&root, &value, &mut errors),
@@ -1392,6 +1529,7 @@ fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, String> {
         errors,
         warnings,
         validation_level: "structure-only",
+        config_sha256,
     })
 }
 
@@ -1429,6 +1567,7 @@ fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Ve
         &root.join("EFI/OC/Kexts"),
         errors,
     );
+    validate_enabled_kext_subpaths(config, &root.join("EFI/OC/Kexts"), errors);
     validate_enabled_paths(
         config,
         &["UEFI", "Drivers"],
@@ -1436,6 +1575,66 @@ fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Ve
         &root.join("EFI/OC/Drivers"),
         errors,
     );
+}
+
+fn validate_enabled_kext_subpaths(
+    config: &plist::Dictionary,
+    directory: &Path,
+    errors: &mut Vec<String>,
+) {
+    let Some(entries) = config
+        .get("Kernel")
+        .and_then(plist::Value::as_dictionary)
+        .and_then(|kernel| kernel.get("Add"))
+        .and_then(plist::Value::as_array)
+    else {
+        return;
+    };
+
+    for entry in entries {
+        let Some(dict) = entry.as_dictionary() else {
+            continue;
+        };
+        if !dict
+            .get("Enabled")
+            .and_then(plist::Value::as_boolean)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(bundle_path) = dict.get("BundlePath").and_then(plist::Value::as_string) else {
+            continue;
+        };
+        if !is_safe_relative_path(bundle_path) {
+            continue;
+        }
+        let bundle = directory.join(bundle_path);
+        if !bundle.is_dir() {
+            continue;
+        }
+
+        for path_key in ["ExecutablePath", "PlistPath"] {
+            let Some(relative) = dict.get(path_key).and_then(plist::Value::as_string) else {
+                continue;
+            };
+            if relative.is_empty() {
+                continue;
+            }
+            if !is_safe_relative_path(relative) || !bundle.join(relative).is_file() {
+                errors.push(format!(
+                    "Kernel/Add 引用的 Kext 内部文件不存在或路径不安全：{bundle_path}/{relative}"
+                ));
+            }
+        }
+    }
+}
+
+fn is_safe_relative_path(value: &str) -> bool {
+    !value.is_empty()
+        && !Path::new(value).is_absolute()
+        && Path::new(value)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn validate_enabled_paths(
@@ -1469,10 +1668,7 @@ fn validate_enabled_paths(
             errors.push(format!("{} 中启用项缺少 {path_key}", keys.join("/")));
             continue;
         };
-        if relative.contains("..")
-            || Path::new(relative).is_absolute()
-            || !directory.join(relative).exists()
-        {
+        if !is_safe_relative_path(relative) || !directory.join(relative).exists() {
             errors.push(format!(
                 "{} 引用的文件不存在或路径不安全：{relative}",
                 keys.join("/")
@@ -1517,7 +1713,280 @@ fn copy_to_empty_target(source_root: &Path, target: &Path) -> Result<InstallCopy
     })
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<usize, String> {
+fn merge_efi_roots(
+    generated_root: &Path,
+    custom_root: &Path,
+    parent: &Path,
+    preferred_source: &str,
+) -> Result<EfiMergeResult, String> {
+    let generated_root = generated_root
+        .canonicalize()
+        .map_err(|error| format!("无法读取项目生成 EFI：{error}"))?;
+    let custom_root = custom_root
+        .canonicalize()
+        .map_err(|error| format!("无法读取用户 EFI：{error}"))?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| format!("无法读取融合保存位置：{error}"))?;
+    if parent.starts_with(&generated_root) || parent.starts_with(&custom_root) {
+        return Err("融合保存位置不能位于任一源 EFI 内部。".into());
+    }
+
+    let (preferred, secondary, preferred_label) = match preferred_source {
+        "generated" => (&generated_root, &custom_root, "generated"),
+        "custom" => (&custom_root, &generated_root, "custom"),
+        _ => return Err("未知的 EFI 冲突优先级。".into()),
+    };
+    let output = unused_child_path(&parent, "EFI-Forge-Merged")?;
+    let staging = parent.join(format!(
+        ".efi-forge-merge-{}-{}",
+        std::process::id(),
+        unix_seconds()
+    ));
+    if staging.exists() {
+        return Err("融合暂存目录已存在，请稍后重试。".into());
+    }
+    fs::create_dir(&staging).map_err(|error| format!("无法创建融合暂存目录：{error}"))?;
+
+    let result = (|| -> Result<EfiMergeResult, String> {
+        let files_from_preferred = copy_directory(&preferred.join("EFI"), &staging.join("EFI"))?;
+        let mut added_files = Vec::new();
+        let mut conflicts = Vec::new();
+        copy_missing_entries(
+            &secondary.join("EFI"),
+            &staging.join("EFI"),
+            &staging,
+            &mut added_files,
+            &mut conflicts,
+        )?;
+
+        let validation = validate_efi_root(&staging)?;
+        if !validation.valid {
+            return Err(format!(
+                "融合结果结构损坏，已停止且不会保留输出：{}",
+                validation.errors.join("；")
+            ));
+        }
+
+        let inactive_added_files = inactive_added_components(&staging, &added_files)?;
+        let mut warnings = vec![
+            "融合结果只完成结构与引用检查；不会执行用户 EFI 中的任何程序，也不代表真机可启动。"
+                .into(),
+            "同名冲突保留主来源版本；次来源只补充主来源中不存在的文件。".into(),
+        ];
+        if !inactive_added_files.is_empty() {
+            warnings.push(format!(
+                "有 {} 个补入组件未被主来源 config.plist 启用，已保留但不会自动加载。",
+                inactive_added_files.len()
+            ));
+        }
+
+        let report = EfiMergeResult {
+            output_path: output.display().to_string(),
+            preferred_source: preferred_label.into(),
+            files_from_preferred,
+            missing_files_added: added_files.len(),
+            conflicts_kept: conflicts.len(),
+            added_files,
+            inactive_added_files,
+            warnings,
+            validation_level: "structure-only",
+            config_sha256: validation
+                .config_sha256
+                .ok_or_else(|| "融合结果缺少 config.plist 哈希。".to_string())?,
+        };
+        let report_json = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("无法生成融合报告：{error}"))?;
+        fs::write(staging.join("EFI-FORGE-MERGE-REPORT.json"), report_json)
+            .map_err(|error| format!("无法写入融合报告：{error}"))?;
+        fs::write(
+            staging.join("README-FIRST.txt"),
+            "EFI Forge 融合副本\r\n\r\n此目录由两份 EFI 静态融合而成，原始目录未修改。\r\n同名冲突遵循用户选择，次来源只补充缺失文件。\r\n补入但未被 config.plist 引用的组件不会自动启用。\r\n当前仅通过结构与引用检查，请先在独立 U 盘测试 OpenCore 和 Recovery。\r\n",
+        )
+        .map_err(|error| format!("无法写入融合说明：{error}"))?;
+        Ok(report)
+    })();
+
+    match result {
+        Ok(mut report) => {
+            fs::rename(&staging, &output).map_err(|error| {
+                let _ = fs::remove_dir_all(&staging);
+                format!("无法完成融合副本写入：{error}")
+            })?;
+            report.output_path = output.display().to_string();
+            Ok(report)
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            Err(error)
+        }
+    }
+}
+
+fn copy_missing_entries(
+    source: &Path,
+    destination: &Path,
+    report_root: &Path,
+    added_files: &mut Vec<String>,
+    conflicts: &mut Vec<String>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(source).map_err(|error| format!("无法读取次来源 EFI：{error}"))?
+    {
+        let entry = entry.map_err(|error| format!("无法读取次来源 EFI 条目：{error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("无法检查次来源 EFI 条目：{error}"))?;
+        let source_path = entry.path();
+        if file_type.is_symlink() || is_reparse_point(&source_path)? {
+            return Err(format!(
+                "次来源 EFI 包含符号链接或重解析点，融合已停止：{}",
+                source_path.display()
+            ));
+        }
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            if target.exists() && !target.is_dir() {
+                conflicts.push(display_relative(report_root, &target));
+            } else {
+                if !target.exists() {
+                    fs::create_dir(&target)
+                        .map_err(|error| format!("无法创建融合目录：{error}"))?;
+                }
+                copy_missing_entries(&source_path, &target, report_root, added_files, conflicts)?;
+            }
+        } else if file_type.is_file() {
+            if is_forbidden_windows_payload(&source_path) {
+                return Err(format!(
+                    "次来源 EFI 包含不允许的 Windows 程序或脚本，融合已停止：{}",
+                    source_path.display()
+                ));
+            }
+            if target.exists() {
+                conflicts.push(display_relative(report_root, &target));
+            } else {
+                fs::copy(&source_path, &target)
+                    .map_err(|error| format!("补充 EFI 文件失败：{error}"))?;
+                added_files.push(display_relative(report_root, &target).replace('\\', "/"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn inactive_added_components(root: &Path, added_files: &[String]) -> Result<Vec<String>, String> {
+    let config = plist::Value::from_file(root.join("EFI/OC/config.plist"))
+        .map_err(|error| format!("无法分析融合后的 config.plist：{error}"))?;
+    let active = active_component_paths(&config);
+    let mut components = BTreeSet::new();
+    for path in added_files {
+        let normalized = path.replace('\\', "/");
+        for (prefix, bundle) in [
+            ("EFI/OC/ACPI/", false),
+            ("EFI/OC/Drivers/", false),
+            ("EFI/OC/Kexts/", true),
+        ] {
+            let Some(relative) = normalized.strip_prefix(prefix) else {
+                continue;
+            };
+            let component = if bundle {
+                relative
+                    .split('/')
+                    .next()
+                    .map(|name| format!("{prefix}{name}"))
+            } else if relative.contains('/') {
+                None
+            } else {
+                Some(format!("{prefix}{relative}"))
+            };
+            if let Some(component) = component {
+                components.insert(component);
+            }
+        }
+    }
+    Ok(components
+        .into_iter()
+        .filter(|component| !active.contains(&component.to_ascii_lowercase()))
+        .collect())
+}
+
+fn active_component_paths(config: &plist::Value) -> BTreeSet<String> {
+    let Some(dictionary) = config.as_dictionary() else {
+        return BTreeSet::new();
+    };
+    let mut active = BTreeSet::new();
+    collect_active_paths(
+        dictionary,
+        &["ACPI", "Add"],
+        "Path",
+        "EFI/OC/ACPI/",
+        &mut active,
+    );
+    collect_active_paths(
+        dictionary,
+        &["Kernel", "Add"],
+        "BundlePath",
+        "EFI/OC/Kexts/",
+        &mut active,
+    );
+    collect_active_paths(
+        dictionary,
+        &["UEFI", "Drivers"],
+        "Path",
+        "EFI/OC/Drivers/",
+        &mut active,
+    );
+    active
+}
+
+fn collect_active_paths(
+    config: &plist::Dictionary,
+    keys: &[&str],
+    path_key: &str,
+    prefix: &str,
+    active: &mut BTreeSet<String>,
+) {
+    let mut value = config.get(keys[0]);
+    for key in &keys[1..] {
+        value = value
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|dictionary| dictionary.get(key));
+    }
+    let Some(entries) = value.and_then(plist::Value::as_array) else {
+        return;
+    };
+    for entry in entries {
+        let Some(dictionary) = entry.as_dictionary() else {
+            continue;
+        };
+        if !dictionary
+            .get("Enabled")
+            .and_then(plist::Value::as_boolean)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some(path) = dictionary.get(path_key).and_then(plist::Value::as_string) {
+            active.insert(
+                format!("{prefix}{path}")
+                    .replace('\\', "/")
+                    .to_ascii_lowercase(),
+            );
+        }
+    }
+}
+
+fn is_forbidden_windows_payload(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "exe" | "com" | "bat" | "cmd" | "ps1" | "vbs" | "js" | "msi" | "scr"
+            )
+        })
+}
+
+pub(crate) fn copy_directory(source: &Path, destination: &Path) -> Result<usize, String> {
     fs::create_dir(destination).map_err(|error| format!("无法创建目标 EFI 目录：{error}"))?;
     let mut copied = 0;
     for entry in fs::read_dir(source).map_err(|error| format!("无法读取源 EFI：{error}"))? {
@@ -1535,6 +2004,12 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<usize, String> {
         if file_type.is_dir() {
             copied += copy_directory(&entry.path(), &target)?;
         } else if file_type.is_file() {
+            if is_forbidden_windows_payload(&entry.path()) {
+                return Err(format!(
+                    "EFI 中包含不允许的 Windows 程序或脚本，复制已停止：{}",
+                    entry.path().display()
+                ));
+            }
             fs::copy(entry.path(), target)
                 .map_err(|error| format!("复制 EFI 文件失败：{error}"))?;
             copied += 1;
@@ -1548,7 +2023,7 @@ fn is_nonempty_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
-fn is_reparse_point(path: &Path) -> Result<bool, String> {
+pub(crate) fn is_reparse_point(path: &Path) -> Result<bool, String> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -1571,7 +2046,7 @@ fn display_relative(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-fn unused_child_path(parent: &Path, base_name: &str) -> Result<PathBuf, String> {
+pub(crate) fn unused_child_path(parent: &Path, base_name: &str) -> Result<PathBuf, String> {
     for suffix in 0..1000 {
         let name = if suffix == 0 {
             base_name.to_string()
@@ -1695,6 +2170,48 @@ mod tests {
     }
 
     #[test]
+    fn requires_cpur_only_for_reviewed_amd_500_series_chipsets() {
+        for (chipset, acpi, expected) in [
+            (
+                "B550",
+                vec!["SSDT-EC-USBX-DESKTOP.aml".into()],
+                Some("SSDT-CPUR.aml"),
+            ),
+            (
+                "A520",
+                vec!["SSDT-EC-USBX-DESKTOP.aml".into(), "SSDT-CPUR.aml".into()],
+                None,
+            ),
+            ("X570", vec!["SSDT-EC-USBX-DESKTOP.aml".into()], None),
+            ("X470", vec!["SSDT-EC-USBX-DESKTOP.aml".into()], None),
+        ] {
+            let manifest = EfiBuildManifest {
+                schema_version: 1,
+                target_mac_os: "14".into(),
+                profile: format!("amd-zen-{chipset}-desktop"),
+                platform: "amd-zen".into(),
+                cpu_core_count: 8,
+                chipset: chipset.into(),
+                smbios_model: "MacPro7,1".into(),
+                igpu_platform_id: None,
+                boot_args: vec!["-v".into()],
+                setup_virtual_map: Some(false),
+                auto_config_supported: true,
+                components: Vec::new(),
+                acpi,
+                drivers: Vec::new(),
+                notes: Vec::new(),
+            };
+
+            let result = validate_automatic_platform(&manifest);
+            match expected {
+                Some(required) => assert!(result.unwrap_err().contains(required)),
+                None => result.unwrap(),
+            }
+        }
+    }
+
+    #[test]
     fn writes_physical_core_count_to_all_four_amd_patches() {
         let mut patches = (0..4)
             .map(|index| {
@@ -1745,12 +2262,138 @@ mod tests {
 
         let validation = validate_efi_root(&source).unwrap();
         assert!(validation.valid, "{:?}", validation.errors);
+        assert!(validation
+            .config_sha256
+            .as_deref()
+            .is_some_and(|hash| hash.len() == 64
+                && hash.chars().all(|character| character.is_ascii_hexdigit())));
         let result = copy_to_empty_target(&source, &target).unwrap();
         assert_eq!(result.files_copied, 3);
         assert!(target.join("EFI/OC/config.plist").is_file());
 
         fs::remove_dir_all(source).unwrap();
         fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn rejects_enabled_kext_with_a_missing_internal_executable() {
+        let source = test_root("missing-kext-executable");
+        create_valid_efi(&source);
+        fs::create_dir_all(source.join("EFI/OC/Kexts/Demo.kext/Contents")).unwrap();
+        fs::write(
+            source.join("EFI/OC/Kexts/Demo.kext/Contents/Info.plist"),
+            b"plist",
+        )
+        .unwrap();
+
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        let mut entry = plist::Dictionary::new();
+        entry.insert("Enabled".into(), plist::Value::Boolean(true));
+        entry.insert(
+            "BundlePath".into(),
+            plist::Value::String("Demo.kext".into()),
+        );
+        entry.insert(
+            "ExecutablePath".into(),
+            plist::Value::String("Contents/MacOS/Demo".into()),
+        );
+        entry.insert(
+            "PlistPath".into(),
+            plist::Value::String("Contents/Info.plist".into()),
+        );
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("Kernel")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert(
+                "Add".into(),
+                plist::Value::Array(vec![plist::Value::Dictionary(entry)]),
+            );
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("Contents/MacOS/Demo")));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn merges_two_valid_efi_roots_without_overwriting_either_source() {
+        let generated = test_root("merge-generated");
+        let custom = test_root("merge-custom");
+        let parent = test_root("merge-output");
+        create_valid_efi(&generated);
+        create_valid_efi(&custom);
+        fs::create_dir_all(generated.join("EFI/OC/Drivers")).unwrap();
+        fs::write(generated.join("EFI/OC/Drivers/Conflict.efi"), b"generated").unwrap();
+        fs::write(custom.join("EFI/OC/Drivers/Conflict.efi"), b"custom").unwrap();
+        fs::create_dir_all(custom.join("EFI/OC/Kexts/UserOnly.kext/Contents")).unwrap();
+        fs::write(
+            custom.join("EFI/OC/Kexts/UserOnly.kext/Contents/Info.plist"),
+            b"user-only",
+        )
+        .unwrap();
+        fs::create_dir_all(&parent).unwrap();
+
+        let result = merge_efi_roots(&generated, &custom, &parent, "generated").unwrap();
+        let output = PathBuf::from(&result.output_path);
+
+        assert_eq!(
+            fs::read(output.join("EFI/OC/Drivers/Conflict.efi")).unwrap(),
+            b"generated"
+        );
+        assert!(output
+            .join("EFI/OC/Kexts/UserOnly.kext/Contents/Info.plist")
+            .is_file());
+        assert_eq!(result.missing_files_added, 1);
+        assert_eq!(result.config_sha256.len(), 64);
+        assert!(result.conflicts_kept >= 4);
+        assert_eq!(
+            result.inactive_added_files,
+            vec!["EFI/OC/Kexts/UserOnly.kext"]
+        );
+        assert!(output.join("EFI-FORGE-MERGE-REPORT.json").is_file());
+        assert_eq!(
+            fs::read(generated.join("EFI/OC/Drivers/Conflict.efi")).unwrap(),
+            b"generated"
+        );
+        assert_eq!(
+            fs::read(custom.join("EFI/OC/Drivers/Conflict.efi")).unwrap(),
+            b"custom"
+        );
+
+        fs::remove_dir_all(generated).unwrap();
+        fs::remove_dir_all(custom).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn rejects_windows_payloads_and_removes_only_the_new_merge_staging_directory() {
+        let generated = test_root("merge-safe-generated");
+        let custom = test_root("merge-unsafe-custom");
+        let parent = test_root("merge-safe-output");
+        create_valid_efi(&generated);
+        create_valid_efi(&custom);
+        fs::create_dir_all(custom.join("EFI/OC/Tools")).unwrap();
+        fs::write(custom.join("EFI/OC/Tools/run-me.exe"), b"never execute").unwrap();
+        fs::create_dir_all(&parent).unwrap();
+
+        let error = merge_efi_roots(&generated, &custom, &parent, "generated").unwrap_err();
+
+        assert!(error.contains("Windows 程序或脚本"));
+        assert!(fs::read_dir(&parent).unwrap().next().is_none());
+        assert!(custom.join("EFI/OC/Tools/run-me.exe").is_file());
+
+        fs::remove_dir_all(generated).unwrap();
+        fs::remove_dir_all(custom).unwrap();
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]
@@ -1932,6 +2575,7 @@ mod tests {
         assert!(!output.join("EFI/OC/ACPI/SSDT-PLUG.aml").exists());
         let validation = validate_efi_root(&output).unwrap();
         assert!(validation.valid, "{:?}", validation.errors);
+        run_locked_ocvalidate(&output).unwrap();
 
         let config = plist::Value::from_file(output.join("EFI/OC/config.plist")).unwrap();
         let patches = nested_value(&config, &["Kernel", "Patch"])
@@ -2000,6 +2644,65 @@ mod tests {
         let copied = copy_to_empty_target(&output, &empty_target).unwrap();
         assert!(copied.files_copied > 0);
         assert!(empty_target.join("EFI/OC/config.plist").is_file());
+
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    #[ignore = "downloads pinned upstream release assets"]
+    fn builds_and_validates_a_real_ryzen_b550_candidate() {
+        let lock: TestComponentLock =
+            serde_json::from_str(include_str!("../../src/data/components.lock.json")).unwrap();
+        let required = BTreeSet::from([
+            "opencore",
+            "lilu",
+            "virtual-smc",
+            "apple-mce-reporter-disabler",
+            "amd-vanilla-patches",
+            "dortania-ssdt-ec-usbx-desktop",
+            "dortania-ssdt-cpur",
+        ]);
+        let components = lock
+            .components
+            .into_iter()
+            .filter(|component| required.contains(component.id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(components.len(), required.len());
+
+        let manifest = EfiBuildManifest {
+            schema_version: 1,
+            target_mac_os: "14".into(),
+            profile: "amd-zen-B550-desktop".into(),
+            platform: "amd-zen".into(),
+            cpu_core_count: 8,
+            chipset: "B550".into(),
+            smbios_model: "MacPro7,1".into(),
+            igpu_platform_id: None,
+            boot_args: vec!["-v".into(), "debug=0x100".into(), "keepsyms=1".into()],
+            setup_virtual_map: Some(false),
+            auto_config_supported: true,
+            components,
+            acpi: vec!["SSDT-EC-USBX-DESKTOP.aml".into(), "SSDT-CPUR.aml".into()],
+            drivers: vec!["OpenRuntime.efi".into(), "OpenHfsPlus.efi".into()],
+            notes: Vec::new(),
+        };
+        let parent = test_root("real-amd-b550-build");
+        fs::create_dir_all(&parent).unwrap();
+
+        let result = build_scaffold(&parent, &manifest, None).unwrap();
+        let output = PathBuf::from(&result.output_path);
+        assert!(result.ready_for_install);
+        assert!(output.join("EFI/OC/ACPI/SSDT-CPUR.aml").is_file());
+        let validation = validate_efi_root(&output).unwrap();
+        assert!(validation.valid, "{:?}", validation.errors);
+
+        let config = plist::Value::from_file(output.join("EFI/OC/config.plist")).unwrap();
+        assert_eq!(
+            nested_value(&config, &["Booter", "Quirks", "SetupVirtualMap"])
+                .unwrap()
+                .as_boolean(),
+            Some(false)
+        );
 
         fs::remove_dir_all(parent).unwrap();
     }

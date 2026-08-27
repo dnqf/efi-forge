@@ -44,6 +44,20 @@ describe("compatibility engine", () => {
     expect(report.findings.find((finding) => finding.subjectId === "cpu")?.ruleId).toBe(
       "cpu.intel.comet-lake",
     );
+    expect(report.modules.map((module) => module.id)).toEqual([
+      "platform",
+      "graphics",
+      "ethernet",
+      "wireless",
+      "audio",
+      "storage",
+      "usb",
+      "laptop-input",
+      "battery",
+      "backlight",
+      "sleep",
+    ]);
+    expect(report.modules.find((module) => module.id === "usb")?.status).toBe("partial");
   });
 
   it("warns about known unsupported graphics and risky storage without removing choice", () => {
@@ -99,6 +113,27 @@ describe("compatibility engine", () => {
     expect(plan?.acpi).toContain("SSDT-RHUB.aml");
   });
 
+  it("keeps the mixed-GPU decision user-selectable", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [
+        ...sampleHardware.gpus,
+        { id: "gpu-rtx", name: "NVIDIA GeForce RTX 3070", vendorId: "10DE", deviceId: "2484" },
+      ],
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const graphics = report.modules.find((module) => module.id === "graphics");
+
+    expect(graphics?.choices.map((choice) => choice.id)).toEqual([
+      "disable-unsupported-gpu",
+      "preserve-all-gpus",
+    ]);
+    expect(createBuildPlan(hardware, report)?.bootArgs).toContain("-wegnoegpu");
+    const preservePlan = createBuildPlan(hardware, report, { unsupportedGpuMode: "preserve" });
+    expect(preservePlan?.bootArgs).not.toContain("-wegnoegpu");
+    expect(preservePlan?.notes.join(" ")).toContain("已按用户选择保留全部显卡");
+  });
+
   it("creates an explicitly experimental plan for high-risk hardware", () => {
     const report = evaluateCompatibility(blockedHardware, "14", compatibilityRules);
 
@@ -122,6 +157,24 @@ describe("compatibility engine", () => {
     expect(plan?.acpi).not.toEqual(expect.arrayContaining(["SSDT-PLUG.aml", "SSDT-AWAC.aml"]));
     expect(plan?.components).toContain("LucyRTL8125Ethernet.kext");
     expect(plan?.components).not.toContain("WhateverGreen.kext");
+  });
+
+  it.each([
+    ["B550", ["SSDT-EC-USBX-DESKTOP.aml", "SSDT-CPUR.aml"], false],
+    ["A520", ["SSDT-EC-USBX-DESKTOP.aml", "SSDT-CPUR.aml"], false],
+    ["X570", ["SSDT-EC-USBX-DESKTOP.aml"], false],
+    ["X470", ["SSDT-EC-USBX-DESKTOP.aml"], true],
+  ])("opens reviewed AMD %s automatic config with chipset-specific defaults", (chipset, acpi, setupVirtualMap) => {
+    const hardware = {
+      ...ryzenB450Hardware,
+      board: { ...ryzenB450Hardware.board, model: `${chipset} TEST BOARD` },
+    };
+    const plan = createBuildPlan(hardware, evaluateCompatibility(hardware, "14", compatibilityRules));
+
+    expect(plan?.chipset).toBe(chipset);
+    expect(plan?.autoConfigSupported).toBe(true);
+    expect(plan?.acpi).toEqual(acpi);
+    expect(plan?.setupVirtualMap).toBe(setupVirtualMap);
   });
 
   it("preserves the user's AMD SetupVirtualMap BIOS choice", () => {
@@ -204,6 +257,27 @@ describe("compatibility engine", () => {
       "gpu.amd.polaris-2048sp.blocked",
     );
     expect(plan?.bootArgs).toContain("-wegnoegpu");
+  });
+
+  it("uses registry priority instead of array order for overlapping GPU rules", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [
+        {
+          id: "gpu-overlap",
+          name: "AMD Radeon RX 580 2048SP",
+          vendorId: "1002",
+          deviceId: "6FDF",
+        },
+      ],
+    };
+    const reversedRules = [...compatibilityRules].reverse();
+
+    const report = evaluateCompatibility(hardware, "14", reversedRules);
+
+    expect(report.findings.find((finding) => finding.subjectId === "gpu-overlap")?.ruleId).toBe(
+      "gpu.amd.polaris-2048sp.blocked",
+    );
   });
 
   it("does not disable an unknown external GPU without an explicit blocked rule", () => {

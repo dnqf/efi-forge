@@ -21,6 +21,8 @@ export interface PciDevice {
   vendorId: string;
   deviceId: string;
   subsystemId?: string;
+  classCode?: string;
+  identitySource?: "direct-pci" | "parent-pci" | "name-only";
 }
 
 export interface HardwareReport {
@@ -32,6 +34,8 @@ export interface HardwareReport {
     secureBoot: boolean;
     manufacturer?: string;
     productName?: string;
+    /** Lenovo 等 OEM 的四位机型码，例如 ThinkPad T480 的 20L5。不是序列号。 */
+    machineType?: string;
   };
   cpu: {
     vendor: "intel" | "amd" | "unknown";
@@ -47,6 +51,7 @@ export interface HardwareReport {
     vendor: string;
     model: string;
     biosVersion: string;
+    biosDate?: string;
   };
   gpus: PciDevice[];
   network: PciDevice[];
@@ -61,6 +66,29 @@ export interface RuleSelector {
   nameIncludes?: string[];
 }
 
+export type RuleEvidence =
+  | "firmware-mode"
+  | "cpu-generation"
+  | "pci-vendor-id"
+  | "pci-device-id"
+  | "device-name";
+
+export type RuleMaturity = "reviewed" | "experimental" | "deprecated";
+
+export type RuleOperation =
+  | { type: "add-component"; value: string }
+  | { type: "add-boot-arg"; value: string }
+  | { type: "add-note"; value: string }
+  | { type: "manual-review"; value: string };
+
+export interface RuleRegistryMetadata {
+  priority: number;
+  evidence: RuleEvidence[];
+  maturity: RuleMaturity;
+  operations: RuleOperation[];
+  testSampleIds: string[];
+}
+
 export interface CompatibilityRule {
   id: string;
   category: DeviceCategory;
@@ -70,6 +98,7 @@ export interface CompatibilityRule {
   message: string;
   action: string;
   source: string;
+  registry: RuleRegistryMetadata;
 }
 
 export interface CompatibilityFinding {
@@ -81,6 +110,36 @@ export interface CompatibilityFinding {
   message: string;
   action: string;
   source?: string;
+  operations: RuleOperation[];
+}
+
+export type HardwareModuleId =
+  | "platform"
+  | "graphics"
+  | "ethernet"
+  | "wireless"
+  | "audio"
+  | "storage"
+  | "usb"
+  | "laptop-input"
+  | "battery"
+  | "backlight"
+  | "sleep";
+
+export interface ModuleChoice {
+  id: string;
+  label: string;
+  description: string;
+  risk: "recommended" | "experimental";
+}
+
+export interface HardwareModuleAssessment {
+  id: HardwareModuleId;
+  label: string;
+  status: CompatibilityStatus;
+  summary: string;
+  evidence: string[];
+  choices: ModuleChoice[];
 }
 
 export type ConfidenceGrade = "A" | "B" | "C" | "D";
@@ -91,6 +150,8 @@ export interface CompatibilityReport {
   confidence: ConfidenceGrade;
   coverage: number;
   findings: CompatibilityFinding[];
+  modules: HardwareModuleAssessment[];
+  feasibility: LegacyFeasibilityAssessment;
   canContinue: boolean;
   recommended: boolean;
 }
@@ -114,6 +175,7 @@ export interface BuildPlan {
 export interface BuildPreferences {
   amdSetupVirtualMap?: boolean;
   customUsbMapIncluded?: boolean;
+  unsupportedGpuMode?: "disable" | "preserve";
 }
 
 export type HardwareReportSource = "demo" | "native" | "imported" | "fixture";
@@ -122,7 +184,8 @@ export type VerificationStage =
   | "candidate"
   | "boot-tested"
   | "recovery-tested"
-  | "install-verified";
+  | "install-verified"
+  | "post-install-verified";
 
 export type ValidationCheckStatus = "passed" | "warning" | "pending" | "failed";
 
@@ -188,11 +251,18 @@ export interface CommunityEfiProfile {
     cpuGenerations: string[];
     biosVersions?: string[];
     requiredPciIds?: string[];
+    requiredAcpiFeatures: string[];
   };
   compatibleMacOS: MacOSVersion[];
   openCoreVersion: string;
   lastVerified: string;
   knownIssues: string[];
+  audit: {
+    identitySanitized: boolean;
+    unknownExecutablesRejected: boolean;
+    officialBinariesReplaced: boolean;
+    reviewedAt: string;
+  };
 }
 
 export type CommunityMatchStatus = "exact" | "close" | "incompatible";
@@ -201,4 +271,102 @@ export interface CommunityProfileMatch {
   profile: CommunityEfiProfile;
   status: CommunityMatchStatus;
   reasons: string[];
+}
+
+/**
+ * A discovery record points at third-party material that may contain useful
+ * machine-specific clues. It is deliberately separate from CommunityEfiProfile:
+ * discovery records are not audited EFI packages and never enter a build plan.
+ */
+export type CommunityDiscoveryBootloader =
+  | "opencore"
+  | "clover"
+  | "mixed"
+  | "unknown";
+
+export interface CommunityDiscoveryEntry {
+  id: string;
+  formFactor: "desktop" | "laptop";
+  section: string;
+  model: string;
+  repositories: string[];
+  guides: string[];
+  note: string;
+  bootloaderHint: CommunityDiscoveryBootloader;
+}
+
+export interface CommunityDiscoveryCatalog {
+  schemaVersion: 1;
+  source: {
+    repository: string;
+    revision: string;
+    sourceFile: string;
+    upstreamUpdated: string | null;
+    licenseStatus: "not-declared";
+    trust: "discovery-only";
+  };
+  stats: {
+    entries: number;
+    laptopEntries: number;
+    desktopEntries: number;
+    repositories: number;
+  };
+  entries: CommunityDiscoveryEntry[];
+}
+
+export interface CommunityDiscoveryMatch {
+  entry: CommunityDiscoveryEntry;
+  confidence: "strong-clue" | "possible-clue";
+  score: number;
+  reasons: string[];
+}
+
+export interface LegacyFeasibilityAssessment {
+  automaticPath: boolean;
+  level: "modern-uefi" | "manual-uefi" | "legacy-experimental" | "instruction-set-risk";
+  reasons: string[];
+  choices: ModuleChoice[];
+}
+
+export type ThinkPadSupportTier =
+  | "guided-candidate"
+  | "legacy-patch-required"
+  | "research-only"
+  | "unsupported-generation";
+
+export interface ThinkPadEvidenceSource {
+  label: string;
+  url: string;
+  kind: "lenovo-psref" | "community-repository" | "opencore-guide";
+}
+
+export interface ThinkPadModelProfile {
+  id: string;
+  label: string;
+  aliases: string[];
+  machineTypes: string[];
+  cpuGenerations: string[];
+  tier: Exclude<ThinkPadSupportTier, "unsupported-generation">;
+  targetMacOS: MacOSVersion[];
+  notes: string[];
+  sources: ThinkPadEvidenceSource[];
+}
+
+export interface ThinkPadVariantCheck {
+  id: "identity" | "cpu" | "graphics" | "wireless" | "storage" | "firmware";
+  label: string;
+  status: "passed" | "warning" | "unknown";
+  detail: string;
+}
+
+export interface ThinkPadAssessment {
+  detected: boolean;
+  match: "machine-type" | "product-name" | "family-only" | "none";
+  profile?: ThinkPadModelProfile;
+  tier: ThinkPadSupportTier;
+  title: string;
+  summary: string;
+  route: string;
+  checks: ThinkPadVariantCheck[];
+  warnings: string[];
 }

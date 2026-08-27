@@ -1,8 +1,12 @@
-import type { CompatibilityRule } from "../domain/types";
+import type { RuleRegistryMetadata } from "../domain/types";
+import {
+  registerCompatibilityRules,
+  type CompatibilityRuleDefinition,
+} from "./ruleRegistry";
 
 const guide = "https://dortania.github.io/OpenCore-Install-Guide/";
 
-export const compatibilityRules: CompatibilityRule[] = [
+const definitions: CompatibilityRuleDefinition[] = [
   {
     id: "firmware.uefi.required",
     category: "firmware",
@@ -29,9 +33,39 @@ export const compatibilityRules: CompatibilityRule[] = [
     status: "supported",
     macOS: ["13", "14", "15"],
     selector: { values: ["coffee-lake"] },
-    message: "Coffee Lake 台式机平台位于首批规则覆盖范围。",
-    action: "使用 Coffee Lake Desktop 基础配置。",
+    message: "Coffee Lake 平台已纳入规则覆盖；台式机与笔记本仍使用不同模板。",
+    action: "根据 system.kind 选择 Desktop 或 Laptop 路径。",
     source: `${guide}config.plist/coffee-lake.html`,
+  },
+  {
+    id: "cpu.intel.kaby-lake-laptop",
+    category: "cpu",
+    status: "partial",
+    macOS: ["13", "14", "15"],
+    selector: { values: ["kaby-lake"] },
+    message: "Kaby Lake 笔记本可进入专项候选路径，但 ACPI、核显和输入设备必须按机型处理。",
+    action: "优先使用精确机型候选或导入用户 EFI；不套用台式机模板。",
+    source: `${guide}config-laptop.plist/kaby-lake.html`,
+  },
+  {
+    id: "cpu.intel.legacy-laptop",
+    category: "cpu",
+    status: "partial",
+    macOS: ["13", "14", "15"],
+    selector: { values: ["ivy-bridge", "haswell", "broadwell", "skylake"] },
+    message: "旧款 Intel 笔记本有社区安装路径，但新系统可能需要核显伪装或 OCLP。",
+    action: "保留实验继续权，进入旧平台专项检查并要求独立 U 盘验证。",
+    source: `${guide}extras/ventura.html`,
+  },
+  {
+    id: "cpu.intel.ice-lake-laptop",
+    category: "cpu",
+    status: "partial",
+    macOS: ["13", "14", "15"],
+    selector: { values: ["ice-lake"] },
+    message: "Ice Lake 位于 OpenCore 笔记本指南范围，但不同 ThinkPad 变体仍缺少本工具实机证据。",
+    action: "只进入研究路径，不自动继承 Comet Lake 配置。",
+    source: `${guide}config-laptop.plist/ice-lake.html`,
   },
   {
     id: "cpu.intel.comet-lake",
@@ -62,6 +96,16 @@ export const compatibilityRules: CompatibilityRule[] = [
     message: "识别到 Intel UHD 630，构建时需要匹配平台的 framebuffer 属性。",
     action: "加入 WhateverGreen，并根据主板输出接口选择平台 ID。",
     source: `${guide}config.plist/comet-lake.html#deviceproperties`,
+  },
+  {
+    id: "gpu.intel.hd-uhd620-laptop",
+    category: "gpu",
+    status: "partial",
+    macOS: ["13", "14", "15"],
+    selector: { vendorIds: ["8086"], nameIncludes: ["HD Graphics 620", "UHD Graphics 620"] },
+    message: "检测到 ThinkPad 常见 Intel HD/UHD 620；图形加速仍取决于 CPU 代际、平台 ID、屏幕和接口。",
+    action: "加入 WhateverGreen 候选，但在精确机型校验前不写死 framebuffer。",
+    source: `${guide}config-laptop.plist/kaby-lake.html#deviceproperties`,
   },
   {
     id: "gpu.amd.polaris-2048sp.blocked",
@@ -137,6 +181,16 @@ export const compatibilityRules: CompatibilityRule[] = [
     source: "https://dortania.github.io/GPU-Buyers-Guide/",
   },
   {
+    id: "gpu.nvidia.thinkpad-dgpu.blocked",
+    category: "gpu",
+    status: "blocked",
+    macOS: ["13", "14", "15"],
+    selector: { vendorIds: ["10DE"], nameIncludes: ["MX150", "QUADRO M", "QUADRO P"] },
+    message: "检测到 ThinkPad 常见 NVIDIA 移动独显；不能照搬仅核显机型的 EFI。",
+    action: "优先核对 BIOS 独显开关或专属 SSDT 禁用路径，仍允许用户保留自己的方案。",
+    source: "https://dortania.github.io/GPU-Buyers-Guide/modern-gpus/nvidia-gpu.html",
+  },
+  {
     id: "network.intel.i219",
     category: "network",
     status: "supported",
@@ -145,6 +199,19 @@ export const compatibilityRules: CompatibilityRule[] = [
     message: "识别到 Intel I219 有线网卡，可使用 IntelMausi。",
     action: "加入锁定版本的 IntelMausi.kext。",
     source: `${guide}ktext.html#ethernet`,
+  },
+  {
+    id: "network.intel.wireless-laptop",
+    category: "network",
+    status: "partial",
+    macOS: ["13", "14", "15"],
+    selector: {
+      vendorIds: ["8086"],
+      nameIncludes: ["WIRELESS", "WI-FI", "WIFI", "CENTRINO", "8260", "8265", "9560"],
+    },
+    message: "检测到 Intel 无线网卡；AirportItlwm/itlwm 必须匹配芯片与 macOS 大版本。",
+    action: "不自动锁死无线方案，允许用户选择原生菜单或 HeliPort 路径。",
+    source: "https://openintelwireless.github.io/itlwm/Compat.html",
   },
   {
     id: "network.intel.i225.partial",
@@ -257,3 +324,185 @@ export const compatibilityRules: CompatibilityRule[] = [
     source: `${guide}macos-limits.html#storage-support`,
   },
 ];
+
+const reviewed = (
+  priority: number,
+  evidence: RuleRegistryMetadata["evidence"],
+  testSampleIds: string[],
+  operations: RuleRegistryMetadata["operations"] = [],
+): RuleRegistryMetadata => ({
+  priority,
+  evidence,
+  maturity: "reviewed",
+  operations,
+  testSampleIds,
+});
+
+const experimental = (
+  priority: number,
+  evidence: RuleRegistryMetadata["evidence"],
+  testSampleIds: string[],
+  operations: RuleRegistryMetadata["operations"] = [],
+): RuleRegistryMetadata => ({
+  priority,
+  evidence,
+  maturity: "experimental",
+  operations,
+  testSampleIds,
+});
+
+const metadata: Record<string, RuleRegistryMetadata> = {
+  "firmware.uefi.required": reviewed(200, ["firmware-mode"], ["sample.uefi"]),
+  "firmware.legacy.blocked": experimental(200, ["firmware-mode"], ["sample.legacy"], [
+    { type: "manual-review", value: "legacy-openduet-path" },
+  ]),
+  "cpu.intel.coffee-lake": reviewed(200, ["cpu-generation"], ["intel.coffee-lake.z390"]),
+  "cpu.intel.comet-lake": reviewed(200, ["cpu-generation"], ["intel.comet-lake.z490"]),
+  "cpu.intel.kaby-lake-laptop": experimental(190, ["cpu-generation"], ["thinkpad.t470"]),
+  "cpu.intel.legacy-laptop": experimental(180, ["cpu-generation"], ["thinkpad.t450"]),
+  "cpu.intel.ice-lake-laptop": experimental(180, ["cpu-generation"], ["thinkpad.ice-lake"]),
+  "cpu.amd.zen": experimental(180, ["cpu-generation"], ["amd.zen3.b450"]),
+  "gpu.intel.uhd630": reviewed(
+    240,
+    ["pci-vendor-id", "device-name"],
+    ["intel.uhd630"],
+    [{ type: "add-component", value: "WhateverGreen.kext" }],
+  ),
+  "gpu.intel.hd-uhd620-laptop": experimental(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["thinkpad.intel.uhd620"],
+    [{ type: "add-component", value: "WhateverGreen.kext" }],
+  ),
+  "gpu.amd.polaris-2048sp.blocked": reviewed(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["amd.rx580-2048sp.6fdf"],
+    [{ type: "manual-review", value: "unsupported-external-gpu" }],
+  ),
+  "gpu.amd.polaris.native": reviewed(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["amd.rx580.67df"],
+    [{ type: "add-component", value: "WhateverGreen.kext" }],
+  ),
+  "gpu.amd.navi-native": reviewed(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["amd.navi.native"],
+    [
+      { type: "add-component", value: "WhateverGreen.kext" },
+      { type: "add-boot-arg", value: "agdpmod=pikera" },
+    ],
+  ),
+  "gpu.amd.navi-spoof.partial": experimental(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["amd.navi.spoof"],
+    [{ type: "manual-review", value: "gpu-device-id-spoof" }],
+  ),
+  "gpu.amd.navi22.partial": experimental(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["amd.navi22"],
+    [{ type: "manual-review", value: "third-party-nootrx" }],
+  ),
+  "gpu.amd.modern-unsupported.blocked": reviewed(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["amd.navi24-or-3x"],
+    [{ type: "manual-review", value: "unsupported-external-gpu" }],
+  ),
+  "gpu.nvidia.turing.blocked": reviewed(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["nvidia.rtx30"],
+    [{ type: "manual-review", value: "unsupported-external-gpu" }],
+  ),
+  "gpu.nvidia.thinkpad-dgpu.blocked": reviewed(
+    240,
+    ["pci-vendor-id", "device-name"],
+    ["thinkpad.nvidia.mx150"],
+    [{ type: "manual-review", value: "disable-laptop-dgpu" }],
+  ),
+  "network.intel.i219": reviewed(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["network.intel.i219"],
+    [{ type: "add-component", value: "IntelMausi.kext" }],
+  ),
+  "network.intel.wireless-laptop": experimental(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["thinkpad.intel.wireless"],
+    [{ type: "manual-review", value: "select-intel-wireless-stack" }],
+  ),
+  "network.intel.i225.partial": experimental(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["network.intel.i225"],
+    [{ type: "add-note", value: "I225 需要按主板验证 Recovery 网络与 DEXT/VT-d 路径。" }],
+  ),
+  "network.intel.i226.partial": experimental(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["network.intel.i226"],
+    [{ type: "manual-review", value: "appleigc-driver" }],
+  ),
+  "network.realtek.rtl8125": reviewed(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["network.realtek.8125"],
+    [{ type: "add-component", value: "LucyRTL8125Ethernet.kext" }],
+  ),
+  "network.realtek.rtl8111": reviewed(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["network.realtek.8168"],
+    [{ type: "add-component", value: "RealtekRTL8111.kext" }],
+  ),
+  "network.intel.i211.partial": experimental(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["network.intel.i211"],
+    [{ type: "manual-review", value: "appleigb-driver" }],
+  ),
+  "audio.realtek.applealc-candidate": experimental(
+    230,
+    ["pci-vendor-id", "device-name"],
+    ["audio.realtek.alc"],
+    [{ type: "add-component", value: "AppleALC.kext" }],
+  ),
+  "storage.samsung.970-evo-plus": reviewed(
+    120,
+    ["device-name"],
+    ["storage.samsung.970-evo-plus"],
+    [{ type: "add-note", value: "安装前确认 Samsung 970 EVO Plus 固件已更新。" }],
+  ),
+  "storage.samsung.pm98x.blocked": reviewed(
+    160,
+    ["device-name"],
+    ["storage.samsung.pm991"],
+    [{ type: "manual-review", value: "unsafe-install-target" }],
+  ),
+  "storage.micron.2200s.blocked": reviewed(
+    160,
+    ["device-name"],
+    ["storage.micron.2200s"],
+    [{ type: "manual-review", value: "unsafe-install-target" }],
+  ),
+  "storage.intel.optane.blocked": reviewed(
+    160,
+    ["device-name"],
+    ["storage.intel.optane"],
+    [{ type: "manual-review", value: "unsupported-storage" }],
+  ),
+  "storage.intel.600p.partial": reviewed(
+    140,
+    ["device-name"],
+    ["storage.intel.600p"],
+    [{ type: "add-note", value: "Intel 600p 不建议作为安装目标。" }],
+  ),
+};
+
+export const compatibilityRules = registerCompatibilityRules(definitions, metadata);

@@ -1,0 +1,43 @@
+name: 硬件规则或真机验证补充
+description: 提交脱敏硬件线索、规则缺口或与指定 config 哈希绑定的验证证据。
+title: "[Hardware] "
+labels: [hardware-evidence]
+body:
+  - type: markdown
+    attributes:
+      value: 索引命中不等于兼容。请优先附上工具导出的脱敏硬件报告或验证证据 JSON，不要上传完整 EFI。
+  - type: input
+    id: model
+    attributes:
+      label: 厂商与完整型号
+      placeholder: 例如 Lenovo ThinkPad T480 / 20L5
+    validations:
+      required: true
+  - type: input
+    id: bios
+    attributes:
+      label: BIOS 版本范围
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS 与 OpenCore 版本
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 观察结果与已脱敏证据
+      description: 说明 Picker、Recovery、安装、桌面及未测试项目；失败结果同样有价值。
+    validations:
+      required: true
+  - type: checkboxes
+    id: claims
+    attributes:
+      label: 边界确认
+      options:
+        - label: 我没有把社区链接表述为已验证适配。
+          required: true
+        - label: 我已移除 Serial、MLB、ROM、SystemUUID 和个人路径。
+          required: true

@@ -19,11 +19,18 @@ const verifiedProfile: CommunityEfiProfile = {
     cpuGenerations: ["comet-lake"],
     biosVersions: ["1621"],
     requiredPciIds: ["8086:9BC5", "8086:0D4D"],
+    requiredAcpiFeatures: [],
   },
   compatibleMacOS: ["14"],
   openCoreVersion: "locked-by-registry",
   lastVerified: "2026-08-25",
   knownIssues: [],
+  audit: {
+    identitySanitized: true,
+    unknownExecutablesRejected: true,
+    officialBinariesReplaced: true,
+    reviewedAt: "2026-08-25",
+  },
 };
 
 describe("community EFI profile resolver", () => {
@@ -51,4 +58,3 @@ describe("community EFI profile resolver", () => {
     expect(match.status).toBe("incompatible");
   });
 });
-

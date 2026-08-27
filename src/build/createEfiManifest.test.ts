@@ -26,6 +26,42 @@ describe("EFI build manifest", () => {
     );
   });
 
+  it("separates manifests with different subsystem evidence", () => {
+    const firstHardware = {
+      ...sampleHardware,
+      gpus: [
+        {
+          ...sampleHardware.gpus[0],
+          subsystemId: "12341043",
+          classCode: "030000",
+          identitySource: "direct-pci" as const,
+        },
+      ],
+    };
+    const secondHardware = {
+      ...firstHardware,
+      gpus: [{ ...firstHardware.gpus[0], subsystemId: "56781458" }],
+    };
+    const firstCompatibility = evaluateCompatibility(firstHardware, "14", compatibilityRules);
+    const secondCompatibility = evaluateCompatibility(secondHardware, "14", compatibilityRules);
+    const first = createEfiManifest(
+      firstHardware,
+      "14",
+      firstCompatibility,
+      createBuildPlan(firstHardware, firstCompatibility),
+    );
+    const second = createEfiManifest(
+      secondHardware,
+      "14",
+      secondCompatibility,
+      createBuildPlan(secondHardware, secondCompatibility),
+    );
+
+    expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
+    expect(first?.hardwareKey).toContain("12341043");
+    expect(first?.hardwareKey).toContain("direct-pci");
+  });
+
   it("exports high-risk hardware as a warned experimental manifest", () => {
     const compatibility = evaluateCompatibility(blockedHardware, "14", compatibilityRules);
     const plan = createBuildPlan(blockedHardware, compatibility);

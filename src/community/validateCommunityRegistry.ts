@@ -1,0 +1,52 @@
+import type { CommunityEfiProfile } from "../domain/types";
+
+export interface CommunityRegistryIssue {
+  profileId: string;
+  message: string;
+}
+
+export function validateCommunityRegistry(
+  profiles: CommunityEfiProfile[],
+): CommunityRegistryIssue[] {
+  const issues: CommunityRegistryIssue[] = [];
+  const ids = new Set<string>();
+
+  for (const profile of profiles) {
+    if (ids.has(profile.id)) issues.push({ profileId: profile.id, message: "社区条目 ID 重复。" });
+    ids.add(profile.id);
+    if (!/^https:\/\/github\.com\//i.test(profile.source.repository)) {
+      issues.push({ profileId: profile.id, message: "社区来源必须是可审计的 GitHub HTTPS 仓库。" });
+    }
+    if (!/^[0-9a-f]{40}$/i.test(profile.source.revision)) {
+      issues.push({ profileId: profile.id, message: "社区来源必须固定到 40 位 commit SHA。" });
+    }
+    if (!profile.source.license.trim()) {
+      issues.push({ profileId: profile.id, message: "社区来源没有许可证记录。" });
+    }
+    if (
+      profile.machine.manufacturerIncludes.length === 0 ||
+      profile.machine.modelIncludes.length === 0 ||
+      profile.machine.cpuGenerations.length === 0
+    ) {
+      issues.push({ profileId: profile.id, message: "缺少厂商、完整型号或 CPU 代际范围。" });
+    }
+    if (!profile.machine.biosVersions?.length) {
+      issues.push({ profileId: profile.id, message: "没有声明经过验证的 BIOS 范围。" });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(profile.lastVerified)) {
+      issues.push({ profileId: profile.id, message: "最后验证日期格式无效。" });
+    }
+    if (profile.status === "verified") {
+      const audit = profile.audit;
+      if (
+        !audit.identitySanitized ||
+        !audit.unknownExecutablesRejected ||
+        !audit.officialBinariesReplaced
+      ) {
+        issues.push({ profileId: profile.id, message: "verified 条目没有完成全部安全审核门。" });
+      }
+    }
+  }
+
+  return issues;
+}

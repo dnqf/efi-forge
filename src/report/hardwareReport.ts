@@ -3,6 +3,7 @@ import type { HardwareReport, PciDevice } from "../domain/types";
 const reportKinds = ["desktop", "laptop"] as const;
 const firmwareKinds = ["uefi", "legacy"] as const;
 const cpuVendors = ["intel", "amd", "unknown"] as const;
+const identitySources = ["direct-pci", "parent-pci", "name-only"] as const;
 
 type JsonObject = Record<string, unknown>;
 
@@ -23,6 +24,14 @@ function stringAt(value: unknown, path: string, allowEmpty = false): string {
 function optionalStringAt(value: unknown, path: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   return stringAt(value, path);
+}
+
+function machineTypeAt(value: unknown, path: string): string | undefined {
+  const machineType = optionalStringAt(value, path)?.toUpperCase();
+  if (machineType && !/^[0-9A-Z]{4}$/.test(machineType)) {
+    throw new Error(`${path} 必须是四位字母数字机型码。`);
+  }
+  return machineType;
 }
 
 function integerAt(value: unknown, path: string, minimum = 0): number {
@@ -66,6 +75,24 @@ function subsystemIdAt(value: unknown, path: string): string | undefined {
   return id;
 }
 
+function classCodeAt(value: unknown, path: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const code = stringAt(value, path).toUpperCase();
+  if (!/^[0-9A-F]{6}$/.test(code)) {
+    throw new Error(`${path} 必须是六位十六进制 PCI Class Code。`);
+  }
+  return code;
+}
+
+function biosDateAt(value: unknown, path: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const date = stringAt(value, path);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+    throw new Error(`${path} 必须是 YYYY-MM-DD 日期。`);
+  }
+  return date;
+}
+
 function pciDevicesAt(value: unknown, path: string): PciDevice[] {
   if (!Array.isArray(value)) throw new Error(`${path} 必须是设备数组。`);
 
@@ -77,6 +104,11 @@ function pciDevicesAt(value: unknown, path: string): PciDevice[] {
       vendorId: pciIdAt(device.vendorId, `${path}[${index}].vendorId`),
       deviceId: pciIdAt(device.deviceId, `${path}[${index}].deviceId`),
       subsystemId: subsystemIdAt(device.subsystemId, `${path}[${index}].subsystemId`),
+      classCode: classCodeAt(device.classCode, `${path}[${index}].classCode`),
+      identitySource:
+        device.identitySource === undefined
+          ? undefined
+          : enumAt(device.identitySource, identitySources, `${path}[${index}].identitySource`),
     };
   });
 }
@@ -101,6 +133,7 @@ export function parseHardwareReport(value: unknown): HardwareReport {
       secureBoot: booleanAt(system.secureBoot, "system.secureBoot"),
       manufacturer: optionalStringAt(system.manufacturer, "system.manufacturer"),
       productName: optionalStringAt(system.productName, "system.productName"),
+      machineType: machineTypeAt(system.machineType, "system.machineType"),
     },
     cpu: {
       vendor: enumAt(cpu.vendor, cpuVendors, "cpu.vendor"),
@@ -116,6 +149,7 @@ export function parseHardwareReport(value: unknown): HardwareReport {
       vendor: stringAt(board.vendor, "board.vendor"),
       model: stringAt(board.model, "board.model"),
       biosVersion: stringAt(board.biosVersion, "board.biosVersion", true),
+      biosDate: biosDateAt(board.biosDate, "board.biosDate"),
     },
     gpus: pciDevicesAt(root.gpus, "gpus"),
     network: pciDevicesAt(root.network, "network"),

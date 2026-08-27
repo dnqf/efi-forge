@@ -29,6 +29,57 @@ describe("hardware report interchange", () => {
         gpus: [{ ...sampleHardware.gpus[0], vendorId: "NVIDIA" }],
       }),
     ).toThrow("十六进制");
+    expect(() =>
+      parseHardwareReport({
+        ...sampleHardware,
+        gpus: [{ ...sampleHardware.gpus[0], classCode: "DISPLAY" }],
+      }),
+    ).toThrow("Class Code");
+  });
+
+  it("keeps normalized evidence while removing raw device paths", () => {
+    const report = parseHardwareReport({
+      ...sampleHardware,
+      board: { ...sampleHardware.board, biosDate: "2024-03-15" },
+      storage: [
+        {
+          ...sampleHardware.storage[0],
+          vendorId: "144D",
+          deviceId: "A808",
+          subsystemId: "A801144D",
+          classCode: "010802",
+          identitySource: "parent-pci",
+          pnpDeviceId: "SCSI\\DISK&VEN_NVME&PROD_PRIVATE-SERIAL",
+        },
+      ],
+    });
+
+    expect(report.board.biosDate).toBe("2024-03-15");
+    expect(report.storage[0]).toEqual(
+      expect.objectContaining({
+        vendorId: "144D",
+        deviceId: "A808",
+        subsystemId: "A801144D",
+        classCode: "010802",
+        identitySource: "parent-pci",
+      }),
+    );
+    expect(serializeHardwareReport(report)).not.toContain("pnpDeviceId");
+    expect(serializeHardwareReport(report)).not.toContain("PRIVATE-SERIAL");
+  });
+
+  it("keeps a non-unique Lenovo machine type but rejects serial-like values", () => {
+    const report = parseHardwareReport({
+      ...sampleHardware,
+      system: { ...sampleHardware.system, machineType: "20l5" },
+    });
+    expect(report.system.machineType).toBe("20L5");
+    expect(() =>
+      parseHardwareReport({
+        ...sampleHardware,
+        system: { ...sampleHardware.system, machineType: "20L5001ABC" },
+      }),
+    ).toThrow("四位");
   });
 
   it("creates a filesystem-safe export name", () => {

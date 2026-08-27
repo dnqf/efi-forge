@@ -1,7 +1,7 @@
 {
   "name": "efi-forge",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.9",
   "homepage": "https://github.com/dnqf/efi-forge",
   "repository": {
     "type": "git",
@@ -10,12 +10,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
+    "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build --configLoader runner",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build --bundles nsis",
     "desktop:check": "tauri build --no-bundle",
     "start:app": "node scripts/serve.mjs",
-    "test": "vitest run",
+    "test": "vitest run --configLoader runner",
+    "test:catalog": "node --test scripts/import-daliansky-catalog.test.mjs",
+    "check": "npm test && npm run test:catalog && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

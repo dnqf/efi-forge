@@ -1,0 +1,50 @@
+name: 软件缺陷
+description: 报告可复现的软件行为；不要上传未脱敏身份信息。
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请先删除 SMBIOS Serial、MLB、ROM、SystemUUID、用户名、磁盘序列号和网络凭据。
+  - type: input
+    id: version
+    attributes:
+      label: EFI Forge 版本
+      placeholder: 例如 0.1.9 alpha
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 运行方式
+      options:
+        - Windows NSIS 桌面版
+        - 浏览器预览版
+        - 源码开发模式
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动软件开始，写出最短可复现路径。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志或截图
+      description: 请再次确认不含身份字段和私密路径。
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已删除 SMBIOS 与设备身份信息。
+          required: true

@@ -9,6 +9,8 @@ import type {
   PciDevice,
   RuleSelector,
 } from "../domain/types";
+import { evaluateHardwareModules } from "./evaluateHardwareModules";
+import { evaluateLegacyFeasibility } from "./evaluateLegacyFeasibility";
 
 interface Subject {
   id: string;
@@ -112,7 +114,17 @@ function unknownFinding(subject: Subject): CompatibilityFinding {
     action: isCritical
       ? "建议补充精确硬件信息；仍可继续生成实验方案。"
       : "保留设备信息并提交匿名规则样本。",
+    operations: [],
   };
+}
+
+function selectorSpecificity(selector: RuleSelector): number {
+  return (
+    (selector.deviceIds?.length ? 8 : 0) +
+    (selector.vendorIds?.length ? 4 : 0) +
+    (selector.values?.length ? 2 : 0) +
+    (selector.nameIncludes?.length ? 1 : 0)
+  );
 }
 
 function overallStatus(findings: CompatibilityFinding[]): CompatibilityStatus {
@@ -132,12 +144,19 @@ export function evaluateCompatibility(
   let matched = 0;
 
   const findings = subjects.map((subject): CompatibilityFinding => {
-    const rule = rules.find(
-      (candidate) =>
-        candidate.category === subject.category &&
-        candidate.macOS.includes(targetMacOS) &&
-        matchesSelector(subject, candidate.selector),
-    );
+    const rule = rules
+      .filter(
+        (candidate) =>
+          candidate.category === subject.category &&
+          candidate.macOS.includes(targetMacOS) &&
+          matchesSelector(subject, candidate.selector),
+      )
+      .sort(
+        (left, right) =>
+          right.registry.priority - left.registry.priority ||
+          selectorSpecificity(right.selector) - selectorSpecificity(left.selector) ||
+          left.id.localeCompare(right.id),
+      )[0];
 
     if (!rule) return unknownFinding(subject);
     matched += 1;
@@ -151,12 +170,15 @@ export function evaluateCompatibility(
       message: rule.message,
       action: rule.action,
       source: rule.source,
+      operations: rule.registry.operations,
     };
   });
 
   const status = overallStatus(findings);
   const coverage = Math.round((matched / subjects.length) * 100);
   const confidence = status === "blocked" ? "D" : status === "supported" ? "B" : "C";
+  const modules = evaluateHardwareModules(hardware, findings);
+  const feasibility = evaluateLegacyFeasibility(hardware, targetMacOS);
 
   return {
     targetMacOS,
@@ -164,6 +186,8 @@ export function evaluateCompatibility(
     confidence,
     coverage,
     findings,
+    modules,
+    feasibility,
     canContinue: true,
     recommended: status !== "blocked",
   };

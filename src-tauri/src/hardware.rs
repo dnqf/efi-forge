@@ -22,6 +22,8 @@ struct SystemInfo {
     secure_boot: bool,
     manufacturer: String,
     product_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    machine_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -43,6 +45,8 @@ struct BoardInfo {
     vendor: String,
     model: String,
     bios_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bios_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -54,6 +58,10 @@ struct PciDevice {
     device_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     subsystem_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    class_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_source: Option<String>,
 }
 
 const WINDOWS_HARDWARE_SCRIPT: &str = r#"
@@ -61,15 +69,44 @@ $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
 
+function Get-PciIdentity {
+  param([string]$InstanceId, [bool]$AllowParent)
+  $current = $InstanceId
+  for ($depth = 0; $depth -lt 8 -and $current; $depth++) {
+    if ($current -match '^PCI\\') {
+      $classCode = $null
+      $compatibleIds = (Get-PnpDeviceProperty -InstanceId $current -KeyName 'DEVPKEY_Device_CompatibleIds').Data
+      foreach ($compatibleId in @($compatibleIds)) {
+        if ([string]$compatibleId -match 'CC_([0-9A-Fa-f]{6})') {
+          $classCode = $Matches[1].ToUpperInvariant()
+          break
+        }
+      }
+      return [PSCustomObject]@{
+        instanceId = $current
+        source = if ($depth -eq 0) { 'direct-pci' } else { 'parent-pci' }
+        classCode = $classCode
+      }
+    }
+    if (-not $AllowParent) { break }
+    $parent = (Get-PnpDeviceProperty -InstanceId $current -KeyName 'DEVPKEY_Device_Parent').Data
+    if (-not $parent -or [string]$parent -eq $current) { break }
+    $current = [string]$parent
+  }
+  return $null
+}
+
 function Convert-Device {
   param([object]$Item, [string]$Prefix, [int]$Index)
   $pnp = [string]$Item.PNPDeviceID
+  $identity = Get-PciIdentity $pnp ($Prefix -eq 'storage')
+  $pciId = if ($identity) { [string]$identity.instanceId } else { $pnp }
   $vendorId = ''
   $deviceId = ''
   $subsystemId = $null
-  if ($pnp -match '(?:VEN|VID)_([0-9A-Fa-f]{4})') { $vendorId = $Matches[1].ToUpperInvariant() }
-  if ($pnp -match '(?:DEV|PID)_([0-9A-Fa-f]{4})') { $deviceId = $Matches[1].ToUpperInvariant() }
-  if ($pnp -match 'SUBSYS_([0-9A-Fa-f]{8})') { $subsystemId = $Matches[1].ToUpperInvariant() }
+  if ($pciId -match 'VEN_([0-9A-Fa-f]{4})') { $vendorId = $Matches[1].ToUpperInvariant() }
+  if ($pciId -match 'DEV_([0-9A-Fa-f]{4})') { $deviceId = $Matches[1].ToUpperInvariant() }
+  if ($pciId -match 'SUBSYS_([0-9A-Fa-f]{8})') { $subsystemId = $Matches[1].ToUpperInvariant() }
   $deviceName = if ($Item.Model) { [string]$Item.Model } elseif ($Item.Name) { [string]$Item.Name } else { 'Unknown device' }
   [PSCustomObject]@{
     id = "$Prefix-$Index"
@@ -77,10 +114,13 @@ function Convert-Device {
     vendorId = $vendorId
     deviceId = $deviceId
     subsystemId = $subsystemId
+    classCode = if ($identity) { $identity.classCode } else { $null }
+    identitySource = if ($identity) { $identity.source } else { 'name-only' }
   }
 }
 
 $computer = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1
+$computerProduct = Get-CimInstance Win32_ComputerSystemProduct | Select-Object -First 1
 $processor = Get-CimInstance Win32_Processor | Select-Object -First 1
 $baseBoard = Get-CimInstance Win32_BaseBoard | Select-Object -First 1
 $bios = Get-CimInstance Win32_BIOS | Select-Object -First 1
@@ -92,6 +132,17 @@ $secureBoot = $secureBootValue -eq 1
 $portableTypes = @(2, 8, 9, 10)
 $kind = if ($portableTypes -contains [int]$computer.PCSystemType) { 'laptop' } else { 'desktop' }
 $cpuVendor = if ([string]$processor.Manufacturer -match 'Intel') { 'intel' } elseif ([string]$processor.Manufacturer -match 'AMD') { 'amd' } else { 'unknown' }
+$biosDate = if ($bios.ReleaseDate) { ([datetime]$bios.ReleaseDate).ToString('yyyy-MM-dd') } else { $null }
+$machineType = $null
+if ([string]$computer.Manufacturer -match 'Lenovo') {
+  $systemSku = [string]$computer.SystemSKUNumber
+  $productCode = [string]$computerProduct.Name
+  if ($systemSku -match '(?i)LENOVO_MT_([0-9A-Z]{4})(?:_|$)') {
+    $machineType = $Matches[1].ToUpperInvariant()
+  } elseif ($productCode -match '(?i)^([0-9A-Z]{4})[0-9A-Z]*$') {
+    $machineType = $Matches[1].ToUpperInvariant()
+  }
+}
 
 $gpus = @()
 $index = 0
@@ -130,6 +181,7 @@ $report = [PSCustomObject]@{
     secureBoot = $secureBoot
     manufacturer = [string]$computer.Manufacturer
     productName = [string]$computer.Model
+    machineType = $machineType
   }
   cpu = [PSCustomObject]@{
     vendor = $cpuVendor
@@ -145,6 +197,7 @@ $report = [PSCustomObject]@{
     vendor = [string]$baseBoard.Manufacturer
     model = [string]$baseBoard.Product
     biosVersion = [string]$bios.SMBIOSBIOSVersion
+    biosDate = $biosDate
   }
   gpus = @($gpus)
   network = @($network)
@@ -157,6 +210,10 @@ $report | ConvertTo-Json -Depth 6 -Compress
 
 fn detect_cpu_generation(name: &str) -> String {
     let lowercase = name.to_ascii_lowercase();
+
+    if lowercase.contains("core ultra") {
+        return "meteor-lake".to_string();
+    }
 
     if lowercase.contains("ryzen") {
         let series = lowercase
@@ -184,11 +241,41 @@ fn detect_cpu_generation(name: &str) -> String {
             .take_while(char::is_ascii_digit)
             .collect();
 
-        if series.len() == 4 && (series.starts_with('8') || series.starts_with('9')) {
-            return "coffee-lake".to_string();
+        if series.len() == 4 {
+            if series.starts_with("10") {
+                return "ice-lake".to_string();
+            }
+            if series.starts_with("11") {
+                return "tiger-lake".to_string();
+            }
+            if series.starts_with("12") {
+                return "alder-lake".to_string();
+            }
+            if series.starts_with("13") {
+                return "raptor-lake".to_string();
+            }
+            return match series.chars().next() {
+                Some('2') => "sandy-bridge".to_string(),
+                Some('3') => "ivy-bridge".to_string(),
+                Some('4') => "haswell".to_string(),
+                Some('5') => "broadwell".to_string(),
+                Some('6') => "skylake".to_string(),
+                Some('7') => "kaby-lake".to_string(),
+                Some('8' | '9') => "coffee-lake".to_string(),
+                _ => "unknown".to_string(),
+            };
         }
         if series.len() == 5 && series.starts_with("10") {
             return "comet-lake".to_string();
+        }
+        if series.len() == 5 && series.starts_with("11") {
+            return "tiger-lake".to_string();
+        }
+        if series.len() == 5 && series.starts_with("12") {
+            return "alder-lake".to_string();
+        }
+        if series.len() == 5 && series.starts_with("13") {
+            return "raptor-lake".to_string();
         }
     }
 
@@ -284,6 +371,30 @@ mod tests {
     #[test]
     fn detects_supported_intel_generations() {
         assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-2600 CPU"),
+            "sandy-bridge"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-3770 CPU"),
+            "ivy-bridge"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-4790K CPU"),
+            "haswell"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-5775C CPU"),
+            "broadwell"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-6700K CPU"),
+            "skylake"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-7700K CPU"),
+            "kaby-lake"
+        );
+        assert_eq!(
             detect_cpu_generation("Intel(R) Core(TM) i7-8700 CPU"),
             "coffee-lake"
         );
@@ -295,11 +406,23 @@ mod tests {
             detect_cpu_generation("Intel(R) Core(TM) i7-10700 CPU"),
             "comet-lake"
         );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i5-1035G1 CPU"),
+            "ice-lake"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-1165G7 CPU"),
+            "tiger-lake"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel Core Ultra 7 155H"),
+            "meteor-lake"
+        );
     }
 
     #[test]
     fn leaves_unknown_generations_unclassified() {
-        assert_eq!(detect_cpu_generation("Intel Core Ultra 7 155H"), "unknown");
+        assert_eq!(detect_cpu_generation("Intel Xeon W-11955M"), "unknown");
     }
 
     #[test]
@@ -341,5 +464,12 @@ mod tests {
         assert!(!report.board.model.trim().is_empty());
         assert!(!report.gpus.is_empty());
         assert!(!report.storage.is_empty());
+        assert!(report
+            .gpus
+            .iter()
+            .chain(&report.network)
+            .chain(&report.audio)
+            .chain(&report.storage)
+            .all(|device| device.identity_source.is_some()));
     }
 }

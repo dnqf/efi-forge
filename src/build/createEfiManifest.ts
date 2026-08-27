@@ -17,13 +17,34 @@ interface ComponentLockFile {
 const lock = componentLock as ComponentLockFile;
 
 function hardwareKey(report: HardwareReport): string {
+  const deviceKey = (category: string, device: HardwareReport["gpus"][number]) =>
+    [
+      category,
+      device.vendorId || "unknown",
+      device.deviceId || "unknown",
+      device.subsystemId ?? "unknown",
+      device.classCode ?? "unknown",
+      device.identitySource ?? "legacy-report",
+    ].join(":");
+  const deviceKeys = (category: string, devices: HardwareReport["gpus"]) =>
+    devices.map((device) => deviceKey(category, device)).sort();
+
   return [
     report.system.kind,
+    report.system.manufacturer ?? "unknown",
+    report.system.productName ?? "unknown",
+    report.cpu.vendor,
     report.cpu.generation,
+    report.cpu.family,
+    report.cpu.model,
+    report.cpu.cores,
     report.board.vendor,
     report.board.model,
-    ...report.gpus.map((device) => `${device.vendorId}:${device.deviceId}`),
-    ...report.network.map((device) => `${device.vendorId}:${device.deviceId}`),
+    report.board.biosVersion || "unknown-bios",
+    ...deviceKeys("gpu", report.gpus),
+    ...deviceKeys("network", report.network),
+    ...deviceKeys("audio", report.audio),
+    ...deviceKeys("storage", report.storage),
   ]
     .join("|")
     .toLowerCase();
