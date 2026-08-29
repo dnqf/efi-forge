@@ -1,4 +1,4 @@
-use crate::builder;
+use crate::{acpi, builder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -201,15 +201,12 @@ where
             validation.errors.join("；")
         ));
     }
-    let base_root = PathBuf::from(validation.root_path)
-        .canonicalize()
-        .map_err(|error| format!("无法读取基础 EFI：{error}"))?;
+    let base_root =
+        builder::canonicalize_plain_directory(Path::new(&validation.root_path), "基础 EFI")?;
     if base_root != session.base_root {
         return Err("基础 EFI 与组件扫描时不一致，请重新扫描组件。".into());
     }
-    let parent = parent
-        .canonicalize()
-        .map_err(|error| format!("无法读取保存位置：{error}"))?;
+    let parent = builder::canonicalize_plain_directory(parent, "组件融合保存位置")?;
     if parent.starts_with(&base_root) {
         return Err("组件融合保存位置不能位于基础 EFI 内部。".into());
     }
@@ -870,26 +867,17 @@ fn scan_component_sources(
             validation.errors.join("；")
         ));
     }
-    let base_root = PathBuf::from(validation.root_path)
-        .canonicalize()
-        .map_err(|error| format!("无法读取基础 EFI：{error}"))?;
+    let base_root =
+        builder::canonicalize_plain_directory(Path::new(&validation.root_path), "基础 EFI")?;
     let mut inspected = Vec::new();
     let mut budget = ScanBudget::default();
     let mut ignored = 0usize;
     let mut roots = Vec::new();
 
     for path in selected {
-        let path = path
-            .canonicalize()
-            .map_err(|error| format!("无法读取所选组件：{error}"))?;
+        let path = builder::canonicalize_plain_path(path, "所选组件")?;
         if path.starts_with(&base_root) || base_root.starts_with(&path) {
             return Err("组件来源与基础 EFI 不能相同或互相包含。".into());
-        }
-        if builder::is_reparse_point(&path)? {
-            return Err(format!(
-                "组件来源是符号链接或 Windows 重解析点：{}",
-                path.display()
-            ));
         }
         roots.push(path.clone());
         discover_components(&path, 0, &mut budget, &mut inspected, &mut ignored)?;
@@ -1074,27 +1062,15 @@ fn inspect_kext(path: &Path, budget: &mut ScanBudget) -> Result<InspectedCompone
 
 fn inspect_aml(path: &Path) -> Result<InspectedComponent, String> {
     ensure_single_file_limit(path)?;
-    let bytes = fs::read(path).map_err(|error| format!("无法读取 AML：{error}"))?;
-    if bytes.len() < 36 {
-        return Err("AML 小于 ACPI 标准表头长度。".into());
-    }
-    let declared = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    if declared < 36 || declared != bytes.len() {
-        return Err("AML 表头声明长度与文件大小不一致。".into());
-    }
-    if bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) != 0 {
-        return Err("AML ACPI 校验和无效。".into());
-    }
-    let signature = ascii_field(&bytes[0..4], "AML Signature")?;
-    let oem_table = ascii_field(&bytes[16..24], "AML OEM Table ID")?;
-    let (sha256, size) = hash_file(path)?;
+    let table = acpi::read_valid_acpi_table(path)?;
+    let size = table.bytes.len() as u64;
     Ok(InspectedComponent {
         source: path.to_path_buf(),
         name: file_name(path)?,
         kind: "acpi",
-        identity: format!("{signature}:{oem_table}"),
-        version: Some(bytes[8].to_string()),
-        sha256,
+        identity: format!("{}:{}", table.signature, table.oem_table_id),
+        version: Some(table.revision.to_string()),
+        sha256: table.sha256,
         size,
         dependencies: Vec::new(),
         executable_path: None,
@@ -1404,16 +1380,6 @@ fn required_plist_string(dictionary: &plist::Dictionary, key: &str) -> Result<St
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .ok_or_else(|| format!("Kext Info.plist 缺少 {key}。"))
-}
-
-fn ascii_field(bytes: &[u8], label: &str) -> Result<String, String> {
-    if !bytes
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
-    {
-        return Err(format!("{label} 包含非法字符。"));
-    }
-    Ok(String::from_utf8_lossy(bytes).trim().to_string())
 }
 
 fn safe_single_name(value: &str) -> bool {

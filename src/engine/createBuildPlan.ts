@@ -10,6 +10,10 @@ const cometAutoChipsets = ["B460", "Z490"];
 const amdAutoChipsets = ["A520", "B450", "B550", "X470", "X570"];
 const amdCpuDefinitionChipsets = ["A520", "B550"];
 const amdDefaultDisabledVirtualMapChipsets = ["A520", "B550", "X570"];
+const amdLateBiosSensitiveChipsets = ["B450", "X470"];
+// Dortania describes "late 2020" without a vendor-specific date. Q4 is a
+// conservative, explicit proxy and remains overrideable by the user.
+const amdLate2020BiosProxy = "2020-10-01";
 
 function detectChipset(boardModel: string): string {
   const normalized = boardModel.toUpperCase();
@@ -97,6 +101,13 @@ export function createBuildPlan(
       : isComet
         ? "intel-comet-lake"
         : "unknown";
+  const reviewedIntelClockPath =
+    (isCoffee && coffeeAutoChipsets.includes(chipset)) ||
+    (isComet && cometAutoChipsets.includes(chipset));
+  const intelClockMode = preferences.intelClockMode ?? "awac";
+  const intelClockEvidence = reviewedIntelClockPath
+    ? preferences.intelClockEvidence
+    : undefined;
 
   const acpi: string[] = [];
   if (isAmdZen) {
@@ -104,12 +115,9 @@ export function createBuildPlan(
     if (amdCpuDefinitionChipsets.includes(chipset)) acpi.push("SSDT-CPUR.aml");
   } else if (isCoffee || isComet) {
     acpi.push("SSDT-PLUG-DRTNIA.aml", "SSDT-EC-USBX-DESKTOP.aml");
-    if (isComet || coffeeAutoChipsets.includes(chipset)) acpi.push("SSDT-AWAC.aml");
+    if (reviewedIntelClockPath && intelClockMode === "awac") acpi.push("SSDT-AWAC.aml");
     if (isCoffee && coffeeAutoChipsets.includes(chipset)) acpi.push("SSDT-PMC.aml");
-    if (
-      isComet &&
-      ["asus", "micro-star", "msi"].some((vendor) => hardware.board.vendor.toLowerCase().includes(vendor))
-    ) {
+    if (isComet && hardware.board.vendor.toLowerCase().includes("asus")) {
       acpi.push("SSDT-RHUB.aml");
     }
   }
@@ -153,44 +161,81 @@ export function createBuildPlan(
     notes.push("已按用户选择保留全部显卡；不会自动加入禁用独显参数，已有 SSDT/DeviceProperties 需由用户自行核对。");
   }
   const supportedAmdChipset = isAmdZen && amdAutoChipsets.includes(chipset);
-  const supportedIntelChipset =
-    (isCoffee && coffeeAutoChipsets.includes(chipset)) ||
-    (isComet && cometAutoChipsets.includes(chipset));
+  const supportedIntelChipset = reviewedIntelClockPath;
   const autoConfigSupported =
     hardware.system.kind === "desktop" &&
     hardware.system.firmware === "uefi" &&
-    (supportedAmdChipset || supportedIntelChipset);
+    (supportedAmdChipset || (supportedIntelChipset && intelClockMode === "awac"));
 
   if ((isCoffee || isComet) && !supportedIntelChipset) {
     notes.push(`主板芯片组 ${chipset} 尚不能可靠决定 AWAC/RTC/PMC 组合，因此保留导出但不自动生成 config.plist。`);
   }
-  if ((isCoffee || isComet) && acpi.includes("SSDT-AWAC.aml")) {
-    notes.push(
-      "当前使用适合多数 300/400 系主板的预编译 SSDT-AWAC；若 DSDT 没有可重新启用的 Legacy RTC，应使用 SSDTTime 生成专属 RTC0 后导入自有 EFI。",
-    );
+  if (supportedIntelChipset) {
+    if (intelClockMode === "manual") {
+      notes.push(
+        "已按用户选择进入手动 RTC0/SSDTTime 路径：不加入预编译 SSDT-AWAC，也不自动生成 config.plist；仍可继续导出锁定组件并融合用户 EFI。",
+      );
+    } else {
+      notes.push(
+        preferences.intelClockMode === "awac"
+          ? "已按用户选择加入预编译 SSDT-AWAC；应确认 ACPI 中存在可重新启用的 Legacy RTC/STAS 路径。"
+          : "未提供 ACPI 时钟证据，暂按多数 300/400 系主板路径加入预编译 SSDT-AWAC；若 DSDT 没有可重新启用的 Legacy RTC，应切换到手动 RTC0/SSDTTime 路径。",
+      );
+    }
+    if (intelClockEvidence) {
+      const tokens = [
+        intelClockEvidence.hasAwacDeviceId ? "ACPI000E" : null,
+        intelClockEvidence.hasLegacyRtcId ? "PNP0B00" : null,
+        intelClockEvidence.hasStasSymbol ? "STAS" : null,
+      ].filter(Boolean).join("、") || "未发现时钟令牌";
+      notes.push(
+        `已记录 DSDT 静态证据 ${intelClockEvidence.sha256.slice(0, 12)}…：${tokens}；该结果只证明字节线索，不证明 ACPI 控制关系。`,
+      );
+      if (intelClockEvidence.suggestedMode !== intelClockMode) {
+        notes.push(
+          `当前时钟选择为 ${intelClockMode}，与 DSDT 静态建议 ${intelClockEvidence.suggestedMode} 不同；保留用户选择并要求启动前人工复核。`,
+        );
+      }
+    }
   }
   if (!autoConfigSupported) {
     notes.push("当前平台仍可导出组件，但尚未开放自动 config.plist，避免把未验证模板伪装成一键配置。 ");
   }
 
-  const smbiosModel = isAmdZen
-    ? "MacPro7,1"
-    : isCoffee
-      ? "iMac19,1"
-      : isComet && hardware.cpu.cores >= 10
-        ? "iMac20,2"
-        : "iMac20,1";
-  const defaultAmdSetupVirtualMap = !amdDefaultDisabledVirtualMapChipsets.includes(chipset);
+  const smbiosModel = autoConfigSupported
+    ? isAmdZen
+      ? "MacPro7,1"
+      : isCoffee
+        ? "iMac19,1"
+        : isComet && hardware.cpu.cores >= 10
+          ? "iMac20,2"
+          : "iMac20,1"
+    : "manual-selection-required";
+  const lateAmdBiosRisk = isAmdZen
+    && amdLateBiosSensitiveChipsets.includes(chipset)
+    && hardware.board.biosDate !== undefined
+    && hardware.board.biosDate >= amdLate2020BiosProxy;
+  const defaultAmdSetupVirtualMap =
+    !amdDefaultDisabledVirtualMapChipsets.includes(chipset) && !lateAmdBiosRisk;
   const setupVirtualMap = isAmdZen
     ? (preferences.amdSetupVirtualMap ?? defaultAmdSetupVirtualMap)
     : undefined;
   if (isAmdZen) {
-    const setupVirtualMapChoice = preferences.amdSetupVirtualMap === undefined ? "芯片组默认" : "用户选择";
-    notes.push(
-      setupVirtualMap
-        ? `已按${setupVirtualMapChoice}开启 SetupVirtualMap；${chipset} 如在早期启动失败，可回到组装页关闭后重新生成。`
-        : `已按${setupVirtualMapChoice}关闭 SetupVirtualMap；${chipset} 属于官方指南提示可能需要关闭的平台，仍可由用户切换。`,
-    );
+    if (preferences.amdSetupVirtualMap !== undefined) {
+      notes.push(
+        `已按用户选择${setupVirtualMap ? "开启" : "关闭"} SetupVirtualMap；该选择优先于芯片组和 BIOS 风险默认值。`,
+      );
+    } else if (lateAmdBiosRisk) {
+      notes.push(
+        `BIOS 日期 ${hardware.board.biosDate} 命中 ${chipset} 的“2020 年末及以后”固件风险代理，已保守关闭 SetupVirtualMap；这不是厂商变更日或实机兼容证明，仍可由用户切换。`,
+      );
+    } else {
+      notes.push(
+        setupVirtualMap
+          ? `已按芯片组默认开启 SetupVirtualMap；${chipset} 如在早期启动失败，可回到组装页关闭后重新生成。`
+          : `已按芯片组风险默认关闭 SetupVirtualMap；${chipset} 属于官方指南提示可能需要关闭的平台，仍可由用户切换。`,
+      );
+    }
   }
   notes.push(
     preferences.customUsbMapIncluded
@@ -199,6 +244,9 @@ export function createBuildPlan(
     "Realtek 声卡 layout-id 在首次安装后校准。",
     "SMBIOS 身份在本机最终构建时生成。 ",
   );
+  if (!autoConfigSupported) {
+    notes.push("当前路径不会预填 SMBIOS 机型；请结合 CPU、显卡、设备类型和目标 macOS 人工选择。 ");
+  }
 
   return {
     platform,
@@ -209,6 +257,8 @@ export function createBuildPlan(
     igpuPlatformId,
     bootArgs,
     setupVirtualMap,
+    intelClockMode: reviewedIntelClockPath ? intelClockMode : undefined,
+    intelClockEvidence,
     autoConfigSupported,
     components: [...components],
     acpi,

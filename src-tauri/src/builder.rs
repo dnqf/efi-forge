@@ -6,10 +6,21 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     process::Command,
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 use zip::ZipArchive;
+
+const MAX_EFI_TREE_ENTRIES: usize = 20_000;
+const MAX_EFI_TREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_EFI_TREE_DEPTH: usize = 32;
+
+#[derive(Default)]
+struct EfiTreeBudget {
+    entries: usize,
+    bytes: u64,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -363,9 +374,7 @@ fn build_scaffold(
     manifest: &EfiBuildManifest,
     usb_map: Option<&UsbMapSelection>,
 ) -> Result<ScaffoldResult, String> {
-    let parent = parent
-        .canonicalize()
-        .map_err(|error| format!("无法读取保存位置：{error}"))?;
+    let parent = canonicalize_plain_directory(parent, "保存位置")?;
     let profile = safe_name(&manifest.profile);
     let base_name = format!("EFI-Forge-{profile}-macOS-{}", manifest.target_mac_os);
     let output = unused_child_path(&parent, &base_name)?;
@@ -1238,12 +1247,7 @@ fn append_codeless_kext(root: &Path, bundle_name: &str) -> Result<(), String> {
 }
 
 fn validate_usb_map(path: &str) -> Result<UsbMapSelection, String> {
-    let source = PathBuf::from(path)
-        .canonicalize()
-        .map_err(|error| format!("无法读取 USB Map：{error}"))?;
-    if !source.is_dir() {
-        return Err("USB Map 必须是一个 .kext 文件夹。".into());
-    }
+    let source = canonicalize_plain_directory(Path::new(path), "USB Map")?;
     let bundle_name = source
         .file_name()
         .and_then(|name| name.to_str())
@@ -1316,16 +1320,15 @@ fn ensure_tree_has_no_links(root: &Path) -> Result<(), String> {
 }
 
 fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf, String> {
+    let _cache_guard = component_cache_lock()
+        .lock()
+        .map_err(|_| "组件缓存锁已损坏，请重新启动 EFI Forge。".to_string())?;
     let destination = cache.join(&component.asset_name);
     if destination.is_file() && verify_file(&destination, component)? {
         return Ok(destination);
     }
 
-    let partial = cache.join(format!(
-        "{}.{}.part",
-        component.asset_name,
-        std::process::id()
-    ));
+    let partial = cache.join(format!("{}.{}.part", component.asset_name, Uuid::new_v4()));
     let client = reqwest::blocking::Client::builder()
         .user_agent("EFI-Forge/0.1")
         .timeout(Duration::from_secs(180))
@@ -1366,6 +1369,11 @@ fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf
     fs::rename(&partial, &destination)
         .map_err(|error| format!("无法保存 {} 的已验证缓存：{error}", component.name))?;
     Ok(destination)
+}
+
+fn component_cache_lock() -> &'static Mutex<()> {
+    static CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    CACHE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn verify_file(path: &Path, component: &LockedComponent) -> Result<bool, String> {
@@ -1471,9 +1479,7 @@ fn extract_directory(
 }
 
 pub(crate) fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, String> {
-    let selected = selected
-        .canonicalize()
-        .map_err(|error| format!("无法读取所选目录：{error}"))?;
+    let selected = canonicalize_plain_directory(selected, "所选 EFI 目录")?;
     let root = if selected.join("EFI").is_dir() {
         selected
     } else if selected
@@ -1505,6 +1511,10 @@ pub(crate) fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, 
         if !required.is_dir() {
             errors.push(format!("缺少目录：{}", display_relative(&root, &required)));
         }
+    }
+
+    if efi.is_dir() {
+        validate_efi_tree_safety(&efi, &root, 0, &mut EfiTreeBudget::default(), &mut errors)?;
     }
 
     let config = oc.join("config.plist");
@@ -1678,12 +1688,8 @@ fn validate_enabled_paths(
 }
 
 fn copy_to_empty_target(source_root: &Path, target: &Path) -> Result<InstallCopyResult, String> {
-    let source_root = source_root
-        .canonicalize()
-        .map_err(|error| format!("无法读取源 EFI：{error}"))?;
-    let target = target
-        .canonicalize()
-        .map_err(|error| format!("无法读取目标目录：{error}"))?;
+    let source_root = canonicalize_plain_directory(source_root, "源 EFI")?;
+    let target = canonicalize_plain_directory(target, "目标目录")?;
     if target == source_root || target.starts_with(&source_root) || source_root.starts_with(&target)
     {
         return Err("源目录与目标目录不能相同或互相包含。".into());
@@ -1719,15 +1725,9 @@ fn merge_efi_roots(
     parent: &Path,
     preferred_source: &str,
 ) -> Result<EfiMergeResult, String> {
-    let generated_root = generated_root
-        .canonicalize()
-        .map_err(|error| format!("无法读取项目生成 EFI：{error}"))?;
-    let custom_root = custom_root
-        .canonicalize()
-        .map_err(|error| format!("无法读取用户 EFI：{error}"))?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|error| format!("无法读取融合保存位置：{error}"))?;
+    let generated_root = canonicalize_plain_directory(generated_root, "项目生成 EFI")?;
+    let custom_root = canonicalize_plain_directory(custom_root, "用户 EFI")?;
+    let parent = canonicalize_plain_directory(parent, "融合保存位置")?;
     if parent.starts_with(&generated_root) || parent.starts_with(&custom_root) {
         return Err("融合保存位置不能位于任一源 EFI 内部。".into());
     }
@@ -1984,6 +1984,83 @@ fn is_forbidden_windows_payload(path: &Path) -> bool {
                 "exe" | "com" | "bat" | "cmd" | "ps1" | "vbs" | "js" | "msi" | "scr"
             )
         })
+}
+
+pub(crate) fn canonicalize_plain_path(path: &Path, label: &str) -> Result<PathBuf, String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("无法读取{label}：{error}"))?;
+    if metadata.file_type().is_symlink() || is_reparse_point(path)? {
+        return Err(format!("{label}不能是符号链接或 Windows 重解析点。"));
+    }
+    path.canonicalize()
+        .map_err(|error| format!("无法读取{label}：{error}"))
+}
+
+pub(crate) fn canonicalize_plain_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    let canonical = canonicalize_plain_path(path, label)?;
+    if !canonical.is_dir() {
+        return Err(format!("{label}必须是目录。"));
+    }
+    Ok(canonical)
+}
+
+fn validate_efi_tree_safety(
+    current: &Path,
+    root: &Path,
+    depth: usize,
+    budget: &mut EfiTreeBudget,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
+    if depth > MAX_EFI_TREE_DEPTH {
+        errors.push(format!(
+            "EFI 目录超过 {MAX_EFI_TREE_DEPTH} 层，无法安全检查。"
+        ));
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(current)
+        .map_err(|error| format!("无法读取 EFI 目录 {}：{error}", current.display()))?
+    {
+        let entry = entry.map_err(|error| format!("无法读取 EFI 目录条目：{error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("无法检查 EFI 条目 {}：{error}", path.display()))?;
+        budget.entries += 1;
+        if budget.entries > MAX_EFI_TREE_ENTRIES {
+            errors.push(format!(
+                "EFI 条目超过 {MAX_EFI_TREE_ENTRIES} 个，无法安全检查和复制。"
+            ));
+            return Ok(());
+        }
+        if metadata.file_type().is_symlink() || is_reparse_point(&path)? {
+            errors.push(format!(
+                "EFI 包含符号链接或 Windows 重解析点：{}",
+                display_relative(root, &path)
+            ));
+            continue;
+        }
+        if metadata.is_dir() {
+            validate_efi_tree_safety(&path, root, depth + 1, budget, errors)?;
+        } else if metadata.is_file() {
+            budget.bytes = budget.bytes.saturating_add(metadata.len());
+            if budget.bytes > MAX_EFI_TREE_BYTES {
+                errors.push("EFI 文件总量超过 2 GB，无法安全检查和复制。".into());
+                return Ok(());
+            }
+            if is_forbidden_windows_payload(&path) {
+                errors.push(format!(
+                    "EFI 包含不允许的 Windows 程序或脚本：{}",
+                    display_relative(root, &path)
+                ));
+            }
+        } else {
+            errors.push(format!(
+                "EFI 包含不支持的文件类型：{}",
+                display_relative(root, &path)
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn copy_directory(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -2302,6 +2379,34 @@ mod tests {
         let result = copy_to_empty_target(&source, &target).unwrap();
         assert_eq!(result.files_copied, 3);
         assert!(target.join("EFI/OC/config.plist").is_file());
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn validation_blocks_windows_payloads_inside_the_efi_tree_before_copy() {
+        let source = test_root("unsafe-validation-source");
+        let target = test_root("unsafe-validation-target");
+        create_valid_efi(&source);
+        fs::create_dir_all(source.join("EFI/OC/Tools")).unwrap();
+        fs::write(
+            source.join("EFI/OC/Tools/never-run.ps1"),
+            b"Write-Host unsafe",
+        )
+        .unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("Windows 程序或脚本")));
+
+        let copy_error = copy_to_empty_target(&source, &target).unwrap_err();
+        assert!(copy_error.contains("Windows 程序或脚本"));
+        assert!(fs::read_dir(&target).unwrap().next().is_none());
 
         fs::remove_dir_all(source).unwrap();
         fs::remove_dir_all(target).unwrap();

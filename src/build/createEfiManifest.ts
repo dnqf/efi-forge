@@ -6,6 +6,7 @@ import type {
   HardwareReport,
   LockedComponent,
   MacOSVersion,
+  ValidationCheck,
 } from "../domain/types";
 
 interface ComponentLockFile {
@@ -96,6 +97,18 @@ export function createEfiManifest(
   const warningCount = compatibility.findings.filter(
     (finding) => finding.status !== "supported",
   ).length;
+  const clockEvidenceChecks: ValidationCheck[] = plan.intelClockMode
+    ? [
+        {
+          id: "acpi.clock-evidence",
+          label: "DSDT 时钟静态证据",
+          status: plan.intelClockEvidence ? "warning" : "pending",
+          detail: plan.intelClockEvidence
+            ? `${plan.intelClockEvidence.confidence === "strong-clue" ? "强线索" : plan.intelClockEvidence.confidence === "possible-clue" ? "可能相关" : "证据不足"}；当前选择 ${plan.intelClockMode}，静态建议 ${plan.intelClockEvidence.suggestedMode}。字节令牌不能替代 ACPI 语义或实机验证。`
+            : "尚未导入当前 BIOS 的 DSDT；可继续使用候选默认值或选择手动 RTC0/SSDTTime。",
+        },
+      ]
+    : [];
 
   return {
     schemaVersion: 1,
@@ -110,6 +123,8 @@ export function createEfiManifest(
     igpuPlatformId: plan.igpuPlatformId,
     bootArgs: [...plan.bootArgs],
     setupVirtualMap: plan.setupVirtualMap,
+    intelClockMode: plan.intelClockMode,
+    intelClockEvidence: plan.intelClockEvidence,
     autoConfigSupported: plan.autoConfigSupported,
     components,
     acpi: [...plan.acpi].sort(),
@@ -136,6 +151,7 @@ export function createEfiManifest(
             ? `组件锁包含无效哈希或文件大小：${invalidLockedComponents.join("、")}。构建必须停止。`
           : `${components.length} 个官方 Release 资产进入构建清单。`,
       },
+      ...clockEvidenceChecks,
       {
         id: "config.ocvalidate",
         label: "config.plist 通过 ocvalidate",

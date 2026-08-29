@@ -124,6 +124,10 @@ describe("EFI build manifest", () => {
     );
 
     expect(manifest?.autoConfigSupported).toBe(true);
+    expect(manifest?.intelClockMode).toBe("awac");
+    expect(manifest?.checks.find((check) => check.id === "acpi.clock-evidence")?.status).toBe(
+      "pending",
+    );
     expect(manifest?.components.map((component) => component.id)).toEqual(
       expect.arrayContaining([
         "dortania-ssdt-plug-drtnia",
@@ -131,6 +135,47 @@ describe("EFI build manifest", () => {
         "dortania-ssdt-awac",
         "dortania-ssdt-rhub",
       ]),
+    );
+  });
+
+  it("records a manual Intel clock path without locking or advertising AWAC auto config", () => {
+    const compatibility = evaluateCompatibility(sampleHardware, "14", compatibilityRules);
+    const intelClockEvidence = {
+      sourceName: "DSDT.aml",
+      signature: "DSDT",
+      oemId: "ASUS",
+      oemTableId: "PRIMEZ49",
+      revision: 2,
+      length: 2048,
+      sha256: "a".repeat(64),
+      hasAwacDeviceId: true,
+      hasLegacyRtcId: false,
+      hasStasSymbol: false,
+      suggestedMode: "manual" as const,
+      confidence: "possible-clue" as const,
+      reasons: ["找到 AWAC，但缺少 RTC/STAS 组合线索。"],
+      warnings: ["只检查字节令牌。"],
+    };
+    const manifest = createEfiManifest(
+      sampleHardware,
+      "14",
+      compatibility,
+      createBuildPlan(sampleHardware, compatibility, {
+        intelClockMode: "manual",
+        intelClockEvidence,
+      }),
+    );
+
+    expect(manifest?.intelClockMode).toBe("manual");
+    expect(manifest?.intelClockEvidence).toEqual(intelClockEvidence);
+    expect(manifest?.autoConfigSupported).toBe(false);
+    expect(manifest?.acpi).not.toContain("SSDT-AWAC.aml");
+    expect(manifest?.notes.join(" ")).toContain("DSDT 静态证据 aaaaaaaaaaaa…");
+    expect(manifest?.checks.find((check) => check.id === "acpi.clock-evidence")?.status).toBe(
+      "warning",
+    );
+    expect(manifest?.components.map((component) => component.id)).not.toContain(
+      "dortania-ssdt-awac",
     );
   });
 

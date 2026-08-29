@@ -95,6 +95,26 @@ describe("compatibility engine", () => {
     );
   });
 
+  it("does not imply an SMBIOS recommendation on a manual-only platform", () => {
+    const hardware = {
+      ...sampleHardware,
+      system: { ...sampleHardware.system, kind: "laptop" as const },
+      cpu: {
+        ...sampleHardware.cpu,
+        name: "Intel Core i5-8250U",
+        generation: "kaby-lake-r",
+      },
+      board: { vendor: "LENOVO", model: "20L5", biosVersion: "N24ET74W" },
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+
+    expect(report.canContinue).toBe(true);
+    expect(plan?.autoConfigSupported).toBe(false);
+    expect(plan?.smbiosModel).toBe("manual-selection-required");
+    expect(plan?.notes.join(" ")).toContain("不会预填 SMBIOS 机型");
+  });
+
   it("creates a platform-specific component and ACPI plan", () => {
     const report = evaluateCompatibility(sampleHardware, "14", compatibilityRules);
     const plan = createBuildPlan(sampleHardware, report);
@@ -102,6 +122,7 @@ describe("compatibility engine", () => {
     expect(plan?.profile).toBe("comet-lake-Z490-desktop");
     expect(plan?.components).toContain("IntelMausi.kext");
     expect(plan?.autoConfigSupported).toBe(true);
+    expect(plan?.intelClockMode).toBe("awac");
     expect(plan?.smbiosModel).toBe("iMac20,1");
     expect(plan?.igpuPlatformId).toBe("07009B3E");
     expect(plan?.acpi).toEqual([
@@ -185,6 +206,54 @@ describe("compatibility engine", () => {
     expect(plan?.notes.join(" ")).toContain("已按用户选择关闭 SetupVirtualMap");
   });
 
+  it.each(["B450", "X470"])(
+    "uses Q4 2020 as a conservative %s BIOS risk proxy for SetupVirtualMap",
+    (chipset) => {
+      const hardware = {
+        ...ryzenB450Hardware,
+        board: {
+          ...ryzenB450Hardware.board,
+          model: `${chipset} TEST BOARD`,
+          biosDate: "2020-12-18",
+        },
+      };
+      const plan = createBuildPlan(
+        hardware,
+        evaluateCompatibility(hardware, "14", compatibilityRules),
+      );
+
+      expect(plan?.setupVirtualMap).toBe(false);
+      expect(plan?.notes.join(" ")).toContain("BIOS 日期 2020-12-18");
+      expect(plan?.notes.join(" ")).toContain("固件风险代理");
+    },
+  );
+
+  it("does not treat an earlier 2020 B450 BIOS as the late-2020 risk proxy", () => {
+    const hardware = {
+      ...ryzenB450Hardware,
+      board: { ...ryzenB450Hardware.board, biosDate: "2020-08-31" },
+    };
+    const plan = createBuildPlan(hardware, evaluateCompatibility(hardware, "14", compatibilityRules));
+
+    expect(plan?.setupVirtualMap).toBe(true);
+    expect(plan?.notes.join(" ")).not.toContain("固件风险代理");
+  });
+
+  it("lets the user's AMD memory-map choice override a recent BIOS risk default", () => {
+    const hardware = {
+      ...ryzenB450Hardware,
+      board: { ...ryzenB450Hardware.board, biosDate: "2022-03-18" },
+    };
+    const plan = createBuildPlan(
+      hardware,
+      evaluateCompatibility(hardware, "14", compatibilityRules),
+      { amdSetupVirtualMap: true },
+    );
+
+    expect(plan?.setupVirtualMap).toBe(true);
+    expect(plan?.notes.join(" ")).toContain("已按用户选择开启 SetupVirtualMap");
+  });
+
   it("creates a locked Coffee Lake Z390 plan with PMC and iMac19,1", () => {
     const hardware = {
       ...sampleHardware,
@@ -208,6 +277,55 @@ describe("compatibility engine", () => {
       "SSDT-AWAC.aml",
       "SSDT-PMC.aml",
     ]);
+  });
+
+  it("allows an Intel user to select a manual RTC0/SSDTTime path without being blocked", () => {
+    const hardware = {
+      ...sampleHardware,
+      cpu: {
+        ...sampleHardware.cpu,
+        name: "Intel Core i7-9700K",
+        generation: "coffee-lake",
+        cores: 8,
+        threads: 8,
+      },
+      board: { vendor: "Gigabyte Technology Co., Ltd.", model: "Z390 AORUS PRO", biosVersion: "F12" },
+    };
+    const compatibility = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const plan = createBuildPlan(hardware, compatibility, { intelClockMode: "manual" });
+
+    expect(compatibility.canContinue).toBe(true);
+    expect(plan?.autoConfigSupported).toBe(false);
+    expect(plan?.intelClockMode).toBe("manual");
+    expect(plan?.acpi).not.toContain("SSDT-AWAC.aml");
+    expect(plan?.notes.join(" ")).toContain("手动 RTC0/SSDTTime");
+  });
+
+  it("records an explicit Intel AWAC choice while keeping automatic config available", () => {
+    const compatibility = evaluateCompatibility(sampleHardware, "14", compatibilityRules);
+    const plan = createBuildPlan(sampleHardware, compatibility, { intelClockMode: "awac" });
+
+    expect(plan?.autoConfigSupported).toBe(true);
+    expect(plan?.intelClockMode).toBe("awac");
+    expect(plan?.acpi).toContain("SSDT-AWAC.aml");
+    expect(plan?.notes.join(" ")).toContain("已按用户选择加入预编译 SSDT-AWAC");
+  });
+
+  it("does not add the ASUS-only RHUB SSDT to an MSI Z490 board", () => {
+    const hardware = {
+      ...sampleHardware,
+      system: { ...sampleHardware.system, manufacturer: "Micro-Star International" },
+      board: {
+        vendor: "Micro-Star International",
+        model: "MPG Z490 GAMING EDGE",
+        biosVersion: "1.D0",
+      },
+    };
+    const plan = createBuildPlan(hardware, evaluateCompatibility(hardware, "14", compatibilityRules));
+
+    expect(plan?.autoConfigSupported).toBe(true);
+    expect(plan?.acpi).toContain("SSDT-AWAC.aml");
+    expect(plan?.acpi).not.toContain("SSDT-RHUB.aml");
   });
 
   it("keeps Coffee Lake Z370 manual because AWAC versus RTC cannot be inferred", () => {

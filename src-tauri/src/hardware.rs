@@ -456,6 +456,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[ignore = "requires a real Windows session with accessible WMI/CIM hardware providers"]
     fn scans_the_current_windows_machine() {
         let report = run_hardware_scan().expect("the local Windows scan should succeed");
 

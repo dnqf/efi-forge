@@ -1,3 +1,4 @@
+mod acpi;
 mod builder;
 mod components;
 mod hardware;
@@ -16,6 +17,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            acpi::select_acpi_clock_evidence,
             hardware::scan_hardware,
             builder::build_efi_scaffold,
             builder::select_usb_map,

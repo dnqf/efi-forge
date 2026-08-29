@@ -12,6 +12,7 @@ import type {
   MacOSVersion,
   HardwareReport,
   HardwareReportSource,
+  AcpiClockEvidence,
 } from "./domain/types";
 import { createBuildPlan } from "./engine/createBuildPlan";
 import { evaluateCompatibility } from "./engine/evaluateCompatibility";
@@ -30,6 +31,7 @@ import {
   copyEfiToEmptyTarget,
   mergeComponentSelections,
   mergeEfiSources,
+  selectAcpiClockEvidence,
   selectComponentSource,
   selectUsbMap,
   validateCustomEfi,
@@ -49,6 +51,13 @@ import {
 } from "./report/hardwareReport";
 import { downloadJson } from "./utils/downloadJson";
 import { assessThinkPad } from "./thinkpad/assessThinkPad";
+import { canBuildFromHardwareSource } from "./workflow/hardwareSourcePolicy";
+import {
+  canVisitWorkflowStep,
+  summarizeCompatibility,
+  workflowStepCopy,
+  type WorkflowStep,
+} from "./workflow/userJourney";
 import {
   createVerificationEvidence,
   mayPromoteVerification,
@@ -194,8 +203,8 @@ const guideSteps = [
   },
   {
     icon: "usb" as const,
-    title: "用独立 U 盘测试",
-    text: "只复制到你选择的空目录，先测试 OpenCore 和 Recovery；不要直接替换电脑现有 EFI。",
+    title: "复制到独立测试目录",
+    text: "只复制 EFI 到你选择的空目录，再用独立 U 盘测试 OpenCore 和 Recovery；工具不会制作完整 macOS 安装盘。",
   },
 ];
 
@@ -223,9 +232,11 @@ function GuideIcon({ kind }: { kind: (typeof guideSteps)[number]["icon"] }) {
 }
 
 function App() {
-  const [workflowStep, setWorkflowStep] = useState<2 | 3 | 4>(2);
+  const [workflowStep, setWorkflowStep] = useState<WorkflowStep>(1);
   const [targetMacOS, setTargetMacOS] = useState<MacOSVersion>("14");
   const [amdSetupVirtualMap, setAmdSetupVirtualMap] = useState<boolean | undefined>(undefined);
+  const [intelClockMode, setIntelClockMode] = useState<"awac" | "manual" | undefined>(undefined);
+  const [intelClockEvidence, setIntelClockEvidence] = useState<AcpiClockEvidence | null>(null);
   const [unsupportedGpuMode, setUnsupportedGpuMode] = useState<"disable" | "preserve">("disable");
   const [guideOpen, setGuideOpen] = useState(true);
   const [scanState, setScanState] = useState<"ready" | "scanning" | "complete">("complete");
@@ -235,7 +246,7 @@ function App() {
   const [reportNotice, setReportNotice] = useState<string | null>(null);
   const [assemblyError, setAssemblyError] = useState<string | null>(null);
   const [assemblyBusy, setAssemblyBusy] = useState<
-    "scaffold" | "validate" | "merge" | "component-scan" | "component-merge" | null
+    "scaffold" | "validate" | "merge" | "component-scan" | "component-merge" | "acpi-analyze" | null
   >(null);
   const [scaffoldResult, setScaffoldResult] = useState<ScaffoldResult | null>(null);
   const [efiValidation, setEfiValidation] = useState<EfiValidationResult | null>(null);
@@ -259,6 +270,7 @@ function App() {
   const [verificationReview, setVerificationReview] = useState<string | null>(null);
   const reportInputRef = useRef<HTMLInputElement>(null);
   const verificationInputRef = useRef<HTMLInputElement>(null);
+  const workflowEpochRef = useRef(0);
   const hasNativeRuntime = nativeRuntimeAvailable();
 
   useEffect(() => {
@@ -278,10 +290,20 @@ function App() {
   const buildPlan = useMemo(
     () => createBuildPlan(hardware, report, {
       amdSetupVirtualMap,
+      intelClockMode,
+      intelClockEvidence: intelClockEvidence ?? undefined,
       customUsbMapIncluded: usbMap !== null,
       unsupportedGpuMode,
     }),
-    [hardware, report, amdSetupVirtualMap, usbMap, unsupportedGpuMode],
+    [
+      hardware,
+      report,
+      amdSetupVirtualMap,
+      intelClockMode,
+      intelClockEvidence,
+      usbMap,
+      unsupportedGpuMode,
+    ],
   );
   const buildManifest = useMemo(
     () => createEfiManifest(hardware, targetMacOS, report, buildPlan),
@@ -324,8 +346,44 @@ function App() {
       && (scanSource === "native" || scanSource === "imported")
       && (activeEfiSource === "generated" || activeEfiSource === "component-merged"),
   );
+  const hardwareInputReady = canBuildFromHardwareSource(scanSource);
+  const previewReport = !hardwareInputReady;
+  const compatibilityDigest = useMemo(
+    () => summarizeCompatibility(report.findings),
+    [report.findings],
+  );
+  const workflowLocked = scanState === "scanning" || assemblyBusy !== null || installBusy;
+
+  function workflowStepAvailable(step: WorkflowStep): boolean {
+    return canVisitWorkflowStep(step, {
+      hardwareInputReady,
+      fixturePreview: scanSource === "fixture",
+      manifestReady: Boolean(buildManifest) && !hasFatalManifestFailure,
+      efiReady: Boolean(efiValidation?.valid),
+    });
+  }
+
+  function workflowStepDetail(step: WorkflowStep): string {
+    if (step === 1) return hardwareInputReady ? "报告已就绪" : "现在开始";
+    if (step === 2) {
+      return hardwareInputReady ? `${compatibilityDigest.attention} 项需要关注` : "等待本机报告";
+    }
+    if (step === 3) {
+      if (scaffoldResult?.readyForInstall) return "候选已校验";
+      return hardwareInputReady ? "可进入" : "等待报告";
+    }
+    return efiValidation?.valid ? "可以安全复制" : "等待完整 EFI";
+  }
+
+  function navigateToWorkflowStep(step: WorkflowStep) {
+    if (workflowLocked || !workflowStepAvailable(step)) return;
+    setWorkflowStep(step);
+    if (step === 1) setGuideOpen(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   function resetBuildOutputs() {
+    workflowEpochRef.current += 1;
     setAssemblyError(null);
     setScaffoldResult(null);
     setEfiValidation(null);
@@ -344,6 +402,7 @@ function App() {
     setScanError(null);
     setReportNotice(null);
     resetBuildOutputs();
+    const workflowEpoch = workflowEpochRef.current;
 
     try {
       if (hasNativeRuntime) {
@@ -355,18 +414,28 @@ function App() {
         setHardware(sampleHardware);
         setScanSource("demo");
       }
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setUsbMap(null);
       setAmdSetupVirtualMap(undefined);
+      setIntelClockMode(undefined);
+      setIntelClockEvidence(null);
       setUnsupportedGpuMode("disable");
       setScanState("complete");
-      setWorkflowStep(2);
+      setWorkflowStep(hasNativeRuntime ? 2 : 1);
+      if (hasNativeRuntime) setGuideOpen(false);
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setScanError(error instanceof Error ? error.message : String(error));
       setScanState("ready");
+      setWorkflowStep(1);
     }
   }
 
   function exportReport() {
+    if (!hardwareInputReady) {
+      setScanError("演示和固定测试样本不能导出为可重新导入的硬件报告。请先扫描目标电脑。");
+      return;
+    }
     downloadJson(hardwareReportFileName(hardware), serializeHardwareReport(hardware));
     setReportNotice("已导出脱敏硬件报告；文件不包含用户名、序列号或网络凭据。");
   }
@@ -376,21 +445,27 @@ function App() {
     event.target.value = "";
     if (!file) return;
 
-      setScanError(null);
-      setReportNotice(null);
-      resetBuildOutputs();
+    setScanError(null);
+    setReportNotice(null);
+    resetBuildOutputs();
+    const workflowEpoch = workflowEpochRef.current;
     try {
       if (file.size > 1024 * 1024) throw new Error("硬件报告不能超过 1 MB。");
       const imported = parseHardwareReport(JSON.parse(await file.text()));
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setHardware(imported);
       setUsbMap(null);
       setAmdSetupVirtualMap(undefined);
+      setIntelClockMode(undefined);
+      setIntelClockEvidence(null);
       setUnsupportedGpuMode("disable");
       setScanSource("imported");
       setScanState("complete");
       setWorkflowStep(2);
+      setGuideOpen(false);
       setReportNotice(`已导入 ${imported.board.vendor} ${imported.board.model} 的脱敏报告。`);
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setScanError(`报告导入失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -401,8 +476,11 @@ function App() {
     setHardware(parseHardwareReport(fixture.report));
     setUsbMap(null);
     setAmdSetupVirtualMap(undefined);
+    setIntelClockMode(undefined);
+    setIntelClockEvidence(null);
     setUnsupportedGpuMode("disable");
     setScanSource("fixture");
+    setScanState("complete");
     setScanError(null);
     resetBuildOutputs();
     setWorkflowStep(2);
@@ -411,6 +489,10 @@ function App() {
 
   function exportManifest() {
     if (!buildManifest) return;
+    if (!hardwareInputReady) {
+      setScanError("演示与固定测试报告只用于预览。请扫描这台电脑或导入它的脱敏报告后再导出构建清单。");
+      return;
+    }
     if (hasFatalManifestFailure) {
       setScanError("构建清单存在结构或组件校验失败，不能导出。硬件兼容性警告不会触发这个停止条件。");
       return;
@@ -425,6 +507,10 @@ function App() {
   }
 
   function continueToAssembly() {
+    if (!hardwareInputReady) {
+      setScanError("当前报告不是这台电脑的本机扫描或导入报告，不能据此生成 EFI。");
+      return;
+    }
     if (!buildManifest || hasFatalManifestFailure) {
       setScanError("构建结构或组件校验尚未通过，暂时不能进入 EFI 组装工作区。");
       return;
@@ -446,9 +532,13 @@ function App() {
     setComponentScan(null);
     setComponentActions({});
     setComponentMergeResult(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await buildEfiScaffold(buildManifest, usbMap?.sourcePath);
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
+        setInstallResult(null);
+        setVerificationReview(null);
         setScaffoldResult(result);
         if (result.readyForInstall) {
           setEfiValidation({
@@ -480,8 +570,10 @@ function App() {
       return;
     }
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await selectUsbMap();
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
         setUsbMap(result);
         resetBuildOutputs();
@@ -492,6 +584,40 @@ function App() {
     }
   }
 
+  async function analyzeAcpiClock() {
+    if (!hasNativeRuntime) {
+      setAssemblyError("DSDT 静态分析仅能在 Windows 桌面版中执行。");
+      return;
+    }
+    setAssemblyBusy("acpi-analyze");
+    setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
+    try {
+      const result = await selectAcpiClockEvidence();
+      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (result) {
+        setIntelClockEvidence(result);
+        resetBuildOutputs();
+        setReportNotice(
+          `DSDT 结构与校验和通过，已记录 ${result.confidence === "strong-clue" ? "强线索" : result.confidence === "possible-clue" ? "可能线索" : "证据不足"}；建议尚未自动应用。`,
+        );
+      }
+    } catch (error) {
+      setAssemblyError(`DSDT 分析已停止：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAssemblyBusy(null);
+    }
+  }
+
+  function applyAcpiClockSuggestion() {
+    if (!intelClockEvidence) return;
+    setIntelClockMode(intelClockEvidence.suggestedMode);
+    resetBuildOutputs();
+    setReportNotice(
+      `已由用户应用 DSDT 静态建议：${intelClockEvidence.suggestedMode === "awac" ? "预编译 AWAC 候选" : "手动 RTC0 / SSDTTime 路径"}。`,
+    );
+  }
+
   async function checkCustomEfi() {
     if (!hasNativeRuntime) {
       setAssemblyError("EFI 文件夹校验仅能在 Windows 桌面版中执行。");
@@ -499,8 +625,10 @@ function App() {
     }
     setAssemblyBusy("validate");
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await validateCustomEfi();
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
         setCustomEfiValidation(result);
         setEfiValidation(result);
@@ -527,12 +655,14 @@ function App() {
     }
     setAssemblyBusy("merge");
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await mergeEfiSources(
         scaffoldResult.outputPath,
         customEfiValidation.rootPath,
         mergePreference,
       );
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
         setMergeResult(result);
         setEfiValidation({
@@ -555,6 +685,8 @@ function App() {
   }
 
   function restoreGeneratedCandidate() {
+    setInstallResult(null);
+    setVerificationReview(null);
     if (!scaffoldResult?.readyForInstall) {
       setEfiValidation(null);
       setActiveEfiSource(null);
@@ -578,8 +710,10 @@ function App() {
     }
     setAssemblyBusy("component-scan");
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await selectComponentSource(selectionMode, scaffoldResult.outputPath);
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
         setComponentScan(result);
         setComponentActions(createDefaultComponentActions(result.items));
@@ -597,7 +731,10 @@ function App() {
   function chooseComponentAction(itemId: string, action: ComponentAction) {
     setComponentActions((current) => ({ ...current, [itemId]: action }));
     setComponentMergeResult(null);
-    if (activeEfiSource === "component-merged") restoreGeneratedCandidate();
+    if (activeEfiSource === "component-merged") {
+      restoreGeneratedCandidate();
+      setReportNotice("组件选择已经变化；已恢复项目生成候选，请重新生成组件融合副本。");
+    }
   }
 
   async function buildComponentMerge() {
@@ -608,12 +745,14 @@ function App() {
     const selections = createComponentSelections(componentScan.items, componentActions);
     setAssemblyBusy("component-merge");
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await mergeComponentSelections(
         componentScan.scanId,
         scaffoldResult.outputPath,
         selections,
       );
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
         setComponentMergeResult(result);
         setMergeResult(null);
@@ -638,7 +777,7 @@ function App() {
 
   function continueToInstallMedia() {
     if (!efiValidation?.valid) {
-      setAssemblyError("只有结构完整的 EFI 才能进入安装介质步骤。兼容性警告不会阻止这里，但结构损坏会停止。");
+      setAssemblyError("只有结构完整的 EFI 才能进入复制与测试步骤。兼容性警告不会阻止这里，但结构损坏会停止。");
       return;
     }
     setAssemblyError(null);
@@ -694,10 +833,13 @@ function App() {
     if (!efiValidation?.valid || !hasNativeRuntime) return;
     setInstallBusy(true);
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await copyEfiToEmptyTarget(efiValidation.rootPath);
+      if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) setInstallResult(result);
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`复制已停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setInstallBusy(false);
@@ -722,9 +864,10 @@ function App() {
           <select
             id="macos-target"
             value={targetMacOS}
+            disabled={workflowLocked}
             onChange={(event) => {
               setTargetMacOS(event.target.value as MacOSVersion);
-              setWorkflowStep(2);
+              setWorkflowStep(scanSource === "demo" ? 1 : 2);
               resetBuildOutputs();
             }}
           >
@@ -741,46 +884,30 @@ function App() {
         <aside className="process-rail" aria-label="构建流程">
           <p className="rail-title">构建路径</p>
           <ol>
-            <li className="complete">
-              <span>01</span>
-              <div>
-                <strong>硬件扫描</strong>
-                <small>7 类设备</small>
-              </div>
-            </li>
-            <li className={workflowStep === 2 ? "active" : "complete"}>
-              <span>02</span>
-              <div>
-                <strong>兼容判断</strong>
-                <small>{report.coverage}% 规则覆盖</small>
-              </div>
-            </li>
-            <li className={workflowStep === 3 ? "active" : workflowStep === 4 ? "complete" : ""}>
-              <span>03</span>
-              <div>
-                <strong>EFI 组装</strong>
-                <small>
-                  {buildManifest
-                    ? hasCompatibilityWarnings
-                      ? "实验构建可执行"
-                      : "候选构建可执行"
-                    : "等待有效报告"}
-                </small>
-              </div>
-            </li>
-            <li className={workflowStep === 4 ? "active" : ""}>
-              <span>04</span>
-              <div>
-                <strong>安装介质</strong>
-                <small>
-                  {efiValidation?.valid
-                    ? efiValidation.validationLevel === "ocvalidate-passed"
-                      ? "ocvalidate 已通过"
-                      : "仅结构检查通过"
-                    : "等待完整 EFI"}
-                </small>
-              </div>
-            </li>
+            {workflowStepCopy.map((step) => {
+              const available = workflowStepAvailable(step.id);
+              const complete = step.id < workflowStep;
+              return (
+                <li
+                  key={step.id}
+                  className={workflowStep === step.id ? "active" : complete ? "complete" : available ? "available" : ""}
+                  aria-current={workflowStep === step.id ? "step" : undefined}
+                >
+                  <button
+                    type="button"
+                    onClick={() => navigateToWorkflowStep(step.id)}
+                    disabled={!available || workflowLocked}
+                    aria-label={`${step.title}：${workflowStepDetail(step.id)}`}
+                  >
+                    <span>{String(step.id).padStart(2, "0")}</span>
+                    <div>
+                      <strong>{step.title}</strong>
+                      <small>{workflowStepDetail(step.id)}</small>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
           </ol>
 
           <div className="safety-note">
@@ -791,7 +918,7 @@ function App() {
           </div>
         </aside>
 
-        {workflowStep === 2 ? (
+        {workflowStep <= 2 ? (
           <>
         <main className="main-canvas">
           <section className="canvas-heading">
@@ -803,21 +930,65 @@ function App() {
               </p>
             </div>
             <div className="heading-actions">
-              <button
-                className={`scan-button ${scanState === "scanning" ? "is-scanning" : ""}`}
-                type="button"
-                onClick={runScan}
-                disabled={scanState === "scanning"}
-              >
-                <span aria-hidden="true" />
-                {scanState === "scanning"
-                  ? "正在读取硬件…"
-                  : hasNativeRuntime
-                    ? "扫描这台电脑"
-                    : "重新载入演示扫描"}
-              </button>
+              {workflowStep === 2 ? (
+                <button
+                  className={`scan-button ${scanState === "scanning" ? "is-scanning" : ""}`}
+                  type="button"
+                  onClick={runScan}
+                  disabled={scanState === "scanning"}
+                >
+                  <span aria-hidden="true" />
+                  {scanState === "scanning" ? "正在重新扫描…" : hasNativeRuntime ? "重新扫描本机" : "返回演示报告"}
+                </button>
+              ) : (
+                <span className="current-task-badge">当前任务：取得本机报告</span>
+              )}
             </div>
           </section>
+
+          {workflowStep === 1 && (
+            <section className="hardware-entry-panel" aria-labelledby="hardware-entry-title">
+              <div className="hardware-entry-heading">
+                <p className="eyebrow">START HERE</p>
+                <h3 id="hardware-entry-title">先告诉工具这台电脑有什么硬件</h3>
+                <p>推荐直接扫描本机；也可以导入由 EFI Forge 在另一台电脑上导出的脱敏 JSON 报告。</p>
+              </div>
+              <div className="hardware-entry-actions">
+                <button
+                  className={`hardware-entry-primary ${scanState === "scanning" ? "is-scanning" : ""}`}
+                  type="button"
+                  onClick={runScan}
+                  disabled={scanState === "scanning"}
+                >
+                  <span>推荐</span>
+                  <strong>{scanState === "scanning" ? "正在读取硬件…" : hasNativeRuntime ? "扫描这台电脑" : "载入演示扫描"}</strong>
+                  <small>只读取硬件信息，不修改 BIOS、磁盘或现有 EFI。</small>
+                </button>
+                <button
+                  className="hardware-entry-secondary"
+                  type="button"
+                  onClick={() => reportInputRef.current?.click()}
+                  disabled={scanState === "scanning"}
+                >
+                  <span>另一种方式</span>
+                  <strong>导入脱敏硬件报告</strong>
+                  <small>适合目标电脑无法直接运行本工具的情况。</small>
+                </button>
+              </div>
+              <details className="fixture-library">
+                <summary>只是想体验界面？打开固定测试样本</summary>
+                <label>
+                  <span>体验示例不能生成或导出 EFI</span>
+                  <select defaultValue="" onChange={(event) => loadFixture(event.target.value)} disabled={scanState === "scanning"}>
+                    <option value="" disabled>选择固定样本…</option>
+                    {hardwareFixtures.map((fixture) => (
+                      <option key={fixture.id} value={fixture.id}>{fixture.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </details>
+            </section>
+          )}
 
           <section className="operation-guide" aria-labelledby="operation-guide-title">
             <header className="operation-guide-heading">
@@ -840,7 +1011,7 @@ function App() {
               <div id="operation-guide-content" className="operation-guide-content">
                 <ol className="guide-steps">
                   {guideSteps.map((step, index) => (
-                    <li key={step.title} aria-current={index === 0 ? "step" : undefined}>
+                    <li key={step.title} aria-current={index === workflowStep - 1 ? "step" : undefined}>
                       <div className="guide-step-visual">
                         <span>{String(index + 1).padStart(2, "0")}</span>
                         <GuideIcon kind={step.icon} />
@@ -861,32 +1032,28 @@ function App() {
             )}
           </section>
 
-          <section className="report-toolbar" aria-label="硬件报告工具">
-            <div className="report-origin">
-              <span>REPORT SOURCE</span>
-              <strong>{sourceCopy[scanSource]}</strong>
-            </div>
-            <label className="fixture-control">
-              <span>测试样本</span>
-              <select defaultValue="" onChange={(event) => loadFixture(event.target.value)}>
-                <option value="" disabled>选择固定样本…</option>
-                {hardwareFixtures.map((fixture) => (
-                  <option key={fixture.id} value={fixture.id}>{fixture.label}</option>
-                ))}
-              </select>
-            </label>
-            <div className="report-actions">
-              <button type="button" onClick={() => reportInputRef.current?.click()}>导入报告</button>
-              <button type="button" onClick={exportReport}>导出报告</button>
-              <input
-                ref={reportInputRef}
-                className="visually-hidden"
-                type="file"
-                accept=".json,application/json"
-                onChange={importReport}
-              />
-            </div>
-          </section>
+          {workflowStep === 2 && (
+            <section className="report-toolbar" aria-label="当前硬件报告">
+              <div className="report-origin">
+                <span>当前报告来源</span>
+                <strong>{sourceCopy[scanSource]}</strong>
+              </div>
+              <p>目标：macOS {macOSNames[targetMacOS]} · 规则覆盖 {report.coverage}%</p>
+              <div className="report-actions">
+                <button type="button" onClick={() => reportInputRef.current?.click()} disabled={scanState === "scanning"}>换一份报告</button>
+                <button type="button" onClick={exportReport} disabled={previewReport}>
+                  {previewReport ? "测试样本不可导出" : "导出脱敏报告"}
+                </button>
+              </div>
+            </section>
+          )}
+          <input
+            ref={reportInputRef}
+            className="visually-hidden"
+            type="file"
+            accept=".json,application/json"
+            onChange={importReport}
+          />
 
           {scanError && (
             <div className="scan-error" role="alert">
@@ -895,12 +1062,69 @@ function App() {
             </div>
           )}
           {reportNotice && <div className="report-notice" role="status">{reportNotice}</div>}
-          {hasCompatibilityWarnings && (
+          {previewReport && (
+            <div className="preview-warning" role="status">
+              <strong>当前不是你的硬件报告</strong>
+              <span>
+                下方内容来自{sourceCopy[scanSource]}，只用于了解界面和规则。请扫描这台电脑或导入它的脱敏报告，之后才能生成或导出对应 EFI。
+              </span>
+            </div>
+          )}
+          {hasCompatibilityWarnings && hardwareInputReady && (
             <div className="experimental-warning" role="status">
               <strong>实验模式仍可继续</strong>
               <span>检测到可能不兼容或信息不足的硬件。工具会保留警告并降低可信度，但不会替你锁死生成权限。</span>
             </div>
           )}
+
+          {hardwareInputReady && (
+            <section className="compatibility-digest" aria-labelledby="compatibility-digest-title">
+              <header>
+                <div>
+                  <p className="eyebrow">WHAT NEEDS YOUR ATTENTION</p>
+                  <h3 id="compatibility-digest-title">
+                    {compatibilityDigest.attention > 0
+                      ? `先核对 ${compatibilityDigest.attention} 项，再决定如何生成`
+                      : "当前检查项没有发现需要人工处理的风险"}
+                  </h3>
+                </div>
+                <span>{report.coverage}% 规则覆盖</span>
+              </header>
+              <div className="compatibility-digest-stats">
+                <div><strong>{compatibilityDigest.supported}</strong><span>已有规则</span></div>
+                <div><strong>{compatibilityDigest.attention}</strong><span>需要关注</span></div>
+                <div><strong>{compatibilityDigest.highRisk}</strong><span>高风险线索</span></div>
+                <div><strong>{compatibilityDigest.unknown}</strong><span>尚未覆盖</span></div>
+              </div>
+              {compatibilityDigest.topActions.length > 0 && (
+                <ol className="compatibility-next-checks">
+                  {compatibilityDigest.topActions.map((finding) => (
+                    <li key={finding.subjectId}>
+                      <StatusMark status={finding.status} />
+                      <div><strong>{finding.subject}</strong><span>{finding.action}</span></div>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+          )}
+
+          <section className={`mobile-next-action ${previewReport ? "is-preview" : ""}`} aria-label="当前流程下一步">
+            <div>
+              <span>NEXT ACTION</span>
+              <strong>{previewReport ? "先取得这台电脑的报告" : "硬件报告已就绪"}</strong>
+              <small>
+                {previewReport
+                  ? "扫描本机或导入脱敏报告后，才会开放对应 EFI 的生成入口。"
+                  : "检查上方警告后，可继续进入 EFI 组装；硬件警告不会阻止你。"}
+              </small>
+            </div>
+            {!previewReport && (
+              <button type="button" onClick={continueToAssembly} disabled={hasFatalManifestFailure}>
+                继续 EFI 组装 →
+              </button>
+            )}
+          </section>
 
           <section className={`board-map ${scanState === "scanning" ? "is-scanning" : ""}`}>
             <div className="board-core">
@@ -999,8 +1223,9 @@ function App() {
           )}
 
           {discoveryCatalog && communityDiscoveries.length > 0 && (
-            <section className="discovery-ledger" aria-labelledby="discovery-ledger-title">
-              <header>
+            <details className="discovery-ledger report-disclosure">
+              <summary>
+                <header>
                 <div>
                   <p className="eyebrow">COMMUNITY DISCOVERY LEDGER</p>
                   <h2 id="discovery-ledger-title">相似机型研究线索</h2>
@@ -1009,8 +1234,9 @@ function App() {
                     不是已验证整包，也不会参与自动构建、下载或替换。
                   </p>
                 </div>
-                <span className="discovery-count">{communityDiscoveries.length} 条候选</span>
-              </header>
+                  <span className="discovery-count">{communityDiscoveries.length} 条候选</span>
+                </header>
+              </summary>
 
               <div className="discovery-provenance">
                 <div>
@@ -1067,17 +1293,17 @@ function App() {
                   也不会解除 EFI 结构损坏与数据写入安全门。
                 </span>
               </footer>
-            </section>
+            </details>
           )}
 
-          <section className="report-section">
-            <div className="section-heading">
+          <details className="report-section report-disclosure">
+            <summary className="section-heading">
               <div>
                 <p className="eyebrow">MODULE MATRIX</p>
                 <h2>模块化适配矩阵</h2>
               </div>
               <span className="section-count">{report.modules.length} 个模块</span>
-            </div>
+            </summary>
             <div className="module-matrix">
               {report.modules.map((module) => (
                 <article key={module.id} className={`module-cell status-${module.status}`}>
@@ -1090,32 +1316,36 @@ function App() {
                 </article>
               ))}
             </div>
-          </section>
+          </details>
 
-          <section className="report-section">
-            <div className="section-heading">
+          <details className="report-section report-disclosure">
+            <summary className="section-heading">
               <div>
                 <p className="eyebrow">RULE RESOLUTION</p>
                 <h2>逐项判断</h2>
               </div>
               <span className="section-count">{report.findings.length} 个检查点</span>
-            </div>
+            </summary>
             <div className="finding-list">
               {report.findings.map((finding) => (
                 <FindingRow key={finding.subjectId} finding={finding} />
               ))}
             </div>
-          </section>
+          </details>
         </main>
 
         <aside className="result-rail">
           <section className="confidence-panel">
             <p className="eyebrow">BUILD CONFIDENCE</p>
             <div className="grade-line">
-              <strong>{report.confidence}</strong>
+              <strong>{previewReport ? "—" : report.confidence}</strong>
               <div>
                 <span>
-                  {report.recommended ? "可生成候选方案" : "实验模式 · 允许继续"}
+                  {previewReport
+                    ? "演示结果 · 仅供预览"
+                    : report.recommended
+                      ? "可生成候选方案"
+                      : "实验模式 · 允许继续"}
                 </span>
                 <small>目标：macOS {macOSNames[targetMacOS]}</small>
               </div>
@@ -1133,7 +1363,7 @@ function App() {
             <div className="section-heading compact">
               <div>
                 <p className="eyebrow">RESOLVED PLAN</p>
-                <h2>候选构建</h2>
+                <h2>{previewReport ? "示例候选" : "候选构建"}</h2>
               </div>
             </div>
 
@@ -1151,13 +1381,19 @@ function App() {
                   <div>
                     <dt>配置来源</dt>
                     <dd>
-                      {exactCommunityProfile
-                        ? `已验证整包：${exactCommunityProfile.profile.title}`
+                      {previewReport
+                        ? "演示数据 + 锁定组件（不生成）"
                         : hasCompatibilityWarnings
-                          ? "用户选择 + 实验规则"
-                          : "官方组件 + 动态规则"}
+                          ? "锁定组件 + 实验规则"
+                          : "锁定组件 + 动态规则"}
                     </dd>
                   </div>
+                  {exactCommunityProfile && (
+                    <div>
+                      <dt>审核基线</dt>
+                      <dd>{exactCommunityProfile.profile.title}（仅参考，未自动导入）</dd>
+                    </div>
+                  )}
                   <div>
                     <dt>启动路径</dt>
                     <dd>
@@ -1176,10 +1412,10 @@ function App() {
                   className="continue-button"
                   type="button"
                   onClick={continueToAssembly}
-                  disabled={hasFatalManifestFailure}
+                  disabled={hasFatalManifestFailure || !hardwareInputReady}
                 >
-                  <span>{hasCompatibilityWarnings ? "以实验模式继续" : "继续下一步"}</span>
-                  <strong>EFI 组装&nbsp; 03 →</strong>
+                  <span>{previewReport ? "先扫描或导入本机报告" : hasCompatibilityWarnings ? "以实验模式继续" : "继续下一步"}</span>
+                  <strong>{previewReport ? "当前仅可预览" : "EFI 组装  03 →"}</strong>
                 </button>
 
                 <div className="plan-group">
@@ -1219,9 +1455,11 @@ function App() {
                   className="build-button"
                   type="button"
                   onClick={exportManifest}
-                  disabled={hasFatalManifestFailure}
+                  disabled={hasFatalManifestFailure || !hardwareInputReady}
                 >
-                  {hasFatalManifestFailure
+                  {previewReport
+                    ? "扫描或导入后可导出清单"
+                    : hasFatalManifestFailure
                     ? "结构或校验失败，不能导出"
                     : hasCompatibilityWarnings
                       ? "导出实验构建清单"
@@ -1258,6 +1496,20 @@ function App() {
                 <span>当前硬件存在兼容性警告，清单仍可导出；它不会被标记为工具推荐或实机验证通过。</span>
               </div>
             )}
+            {!hasNativeRuntime && (
+              <div className="native-preview-note" role="status">
+                <strong>当前是界面预览</strong>
+                <span>文件选择、组件下载、EFI 校验和安全复制只在安装后的 Windows 桌面版中启用。</span>
+              </div>
+            )}
+            <section className="assembly-route-callout" aria-label="推荐组装顺序">
+              <strong>第一次组装，建议先走 A 路径</strong>
+              <ol>
+                <li>生成项目候选 EFI</li>
+                <li>按需加入个人组件或完整 EFI</li>
+                <li>结构与 ocvalidate 通过后再复制测试</li>
+              </ol>
+            </section>
             {scanError && <div className="scan-error" role="alert"><strong>无法继续</strong><span>{scanError}</span></div>}
             {assemblyError && <div className="scan-error" role="alert"><strong>操作已停止</strong><span>{assemblyError}</span></div>}
             {reportNotice && <div className="report-notice" role="status">{reportNotice}</div>}
@@ -1313,6 +1565,7 @@ function App() {
                         <select
                           className="inline-option"
                           value={buildPlan.setupVirtualMap ? "enabled" : "disabled"}
+                          disabled={assemblyBusy !== null}
                           onChange={(event) => {
                             setAmdSetupVirtualMap(event.target.value === "enabled");
                             resetBuildOutputs();
@@ -1325,6 +1578,67 @@ function App() {
                       </dd>
                     </div>
                   )}
+                  {buildPlan.intelClockMode && (
+                    <div className="clock-profile-row">
+                      <dt>系统时钟</dt>
+                      <dd>
+                        <select
+                          className="inline-option"
+                          value={intelClockMode ?? "auto"}
+                          disabled={assemblyBusy !== null}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setIntelClockMode(
+                              value === "auto" ? undefined : (value as "awac" | "manual"),
+                            );
+                            resetBuildOutputs();
+                          }}
+                          aria-label="Intel AWAC 或 RTC0 路径"
+                        >
+                          <option value="auto">自动：预编译 AWAC（候选）</option>
+                          <option value="awac">使用 AWAC（已核对 STAS / Legacy RTC）</option>
+                          <option value="manual">手动 RTC0 / SSDTTime（不自动配置）</option>
+                        </select>
+                        <div className="clock-evidence-actions">
+                          <button
+                            className="clock-evidence-button"
+                            type="button"
+                            onClick={analyzeAcpiClock}
+                            disabled={assemblyBusy !== null || !hasNativeRuntime}
+                          >
+                            {assemblyBusy === "acpi-analyze" ? "正在校验 DSDT…" : "选择 DSDT.aml 获取静态证据"}
+                          </button>
+                        </div>
+                        {intelClockEvidence && (
+                          <section className={`clock-evidence evidence-${intelClockEvidence.confidence}`}>
+                            <div>
+                              <strong>DSDT 静态线索</strong>
+                              <span>
+                                {intelClockEvidence.confidence === "strong-clue"
+                                  ? "强线索"
+                                  : intelClockEvidence.confidence === "possible-clue"
+                                    ? "可能相关"
+                                    : "证据不足"}
+                              </span>
+                            </div>
+                            <code title={intelClockEvidence.sha256}>
+                              {intelClockEvidence.sourceName} · {intelClockEvidence.sha256.slice(0, 12)}…
+                            </code>
+                            <ul>
+                              <li>ACPI000E {intelClockEvidence.hasAwacDeviceId ? "已发现" : "未发现"}</li>
+                              <li>PNP0B00 {intelClockEvidence.hasLegacyRtcId ? "已发现" : "未发现"}</li>
+                              <li>STAS {intelClockEvidence.hasStasSymbol ? "已发现" : "未发现"}</li>
+                            </ul>
+                            <p>{intelClockEvidence.reasons[0]}</p>
+                            <button type="button" onClick={applyAcpiClockSuggestion} disabled={assemblyBusy !== null}>
+                              应用建议：{intelClockEvidence.suggestedMode === "awac" ? "AWAC 候选" : "手动核对"}
+                            </button>
+                            <small>{intelClockEvidence.warnings[0]}</small>
+                          </section>
+                        )}
+                      </dd>
+                    </div>
+                  )}
                   {report.modules.find((module) => module.id === "graphics")?.choices.length ? (
                     <div>
                       <dt>混合显卡</dt>
@@ -1332,6 +1646,7 @@ function App() {
                         <select
                           className="inline-option"
                           value={unsupportedGpuMode}
+                          disabled={assemblyBusy !== null}
                           onChange={(event) => {
                             setUnsupportedGpuMode(event.target.value as "disable" | "preserve");
                             resetBuildOutputs();
@@ -1407,6 +1722,17 @@ function App() {
                       </button>
                     </div>
                   </article>
+                </div>
+
+                <details className="advanced-build-options">
+                  <summary>
+                    <div>
+                      <span>ADVANCED / OPTIONAL</span>
+                      <strong>添加个人组件或融合两份完整 EFI</strong>
+                      <small>先完成 A 或 B；只有确实需要保留专属配置时再展开。</small>
+                    </div>
+                  </summary>
+                  <div className="advanced-build-grid">
                   <article className="component-source-path">
                     <span className="path-index">C</span>
                     <div>
@@ -1451,9 +1777,12 @@ function App() {
                           <select
                             className="inline-option"
                             value={mergePreference}
+                            disabled={assemblyBusy !== null}
                             onChange={(event) => {
                               setMergePreference(event.target.value as "generated" | "custom");
                               setMergeResult(null);
+                              setInstallResult(null);
+                              setVerificationReview(null);
                               if (activeEfiSource === "merged") {
                                 if (customEfiValidation?.valid) {
                                   setEfiValidation(customEfiValidation);
@@ -1463,6 +1792,7 @@ function App() {
                                   setActiveEfiSource(null);
                                 }
                               }
+                              setReportNotice("融合冲突优先级已经变化；需要重新生成融合副本后再进入复制与测试。");
                             }}
                           >
                             <option value="generated">项目生成 EFI（推荐起点）</option>
@@ -1488,7 +1818,8 @@ function App() {
                       </div>
                     </div>
                   </article>
-                </div>
+                  </div>
+                </details>
 
                 {componentScan && (
                   <section className="component-switchboard" aria-label="用户组件选择工作台">
@@ -1529,6 +1860,7 @@ function App() {
                           <div className="component-choice" role="cell">
                             <select
                               value={componentActions[item.id] ?? item.defaultAction}
+                              disabled={assemblyBusy !== null}
                               onChange={(event) => chooseComponentAction(item.id, event.target.value as ComponentAction)}
                               aria-label={`${item.name} 的处理方式`}
                             >
@@ -1708,15 +2040,15 @@ function App() {
             )}
 
             <div className="assembly-actions">
-              <button className="secondary-button" type="button" onClick={() => setWorkflowStep(2)}>
+              <button className="secondary-button" type="button" onClick={() => setWorkflowStep(2)} disabled={assemblyBusy !== null}>
                 ← 返回兼容判断
               </button>
               <div>
-                <button className="secondary-button" type="button" onClick={exportManifest}>
+                <button className="secondary-button" type="button" onClick={exportManifest} disabled={assemblyBusy !== null}>
                   导出构建清单
                 </button>
-                <button className="build-button" type="button" onClick={continueToInstallMedia} disabled={!efiValidation?.valid}>
-                  {efiValidation?.valid ? "进入安装介质 04 →" : "验证完整 EFI 后继续"}
+                <button className="build-button" type="button" onClick={continueToInstallMedia} disabled={!efiValidation?.valid || assemblyBusy !== null}>
+                  {efiValidation?.valid ? "进入复制与测试 04 →" : "验证完整 EFI 后继续"}
                 </button>
               </div>
             </div>
@@ -1725,14 +2057,25 @@ function App() {
           <section className="assembly-workspace install-workspace">
             <header className="assembly-header">
               <div>
-                <p className="eyebrow">STEP 04 / INSTALL MEDIA</p>
-                <h2>安装介质准备</h2>
+                <p className="eyebrow">STEP 04 / SAFE COPY</p>
+                <h2>复制 EFI 到测试目录</h2>
                 <p className="subcopy">将已验证的 EFI 复制到你选择的空目录。此版本不格式化磁盘、不创建分区、不覆盖已有文件。</p>
               </div>
               <span className="assembly-mode">只复制 / 不格式化</span>
             </header>
 
             {assemblyError && <div className="scan-error" role="alert"><strong>操作已停止</strong><span>{assemblyError}</span></div>}
+            <ol className="copy-journey" aria-label="复制和测试顺序">
+              <li className="is-complete">
+                <span>01</span><div><strong>确认来源</strong><small>当前 EFI 已通过可执行的结构检查。</small></div>
+              </li>
+              <li className={installResult ? "is-complete" : "is-active"}>
+                <span>02</span><div><strong>复制到空目录</strong><small>工具拒绝覆盖任何已有文件。</small></div>
+              </li>
+              <li className={installResult ? "is-active" : ""}>
+                <span>03</span><div><strong>从独立介质启动</strong><small>进入 OpenCore 或 Recovery 后再记录真机结果。</small></div>
+              </li>
+            </ol>
             <div className="install-grid">
               <section className="assembly-card install-source-card">
                 <p className="eyebrow">CHECKED SOURCE</p>
@@ -1775,7 +2118,7 @@ function App() {
             )}
 
             <div className="assembly-actions">
-              <button className="secondary-button" type="button" onClick={() => setWorkflowStep(3)}>← 返回 EFI 组装</button>
+              <button className="secondary-button" type="button" onClick={() => setWorkflowStep(3)} disabled={installBusy}>← 返回 EFI 组装</button>
               <div>
                 <span>只接受空目录；发现已有内容将自动停止</span>
                 <button className="build-button" type="button" onClick={copyValidatedEfi} disabled={installBusy}>
@@ -1796,7 +2139,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.10-dev</span>
+        <span>EFI Forge v0.1.10-alpha</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

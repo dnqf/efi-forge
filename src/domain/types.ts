@@ -156,6 +156,23 @@ export interface CompatibilityReport {
   recommended: boolean;
 }
 
+export interface AcpiClockEvidence {
+  sourceName: string;
+  signature: string;
+  oemId: string;
+  oemTableId: string;
+  revision: number;
+  length: number;
+  sha256: string;
+  hasAwacDeviceId: boolean;
+  hasLegacyRtcId: boolean;
+  hasStasSymbol: boolean;
+  suggestedMode: "awac" | "manual";
+  confidence: "strong-clue" | "possible-clue" | "insufficient";
+  reasons: string[];
+  warnings: string[];
+}
+
 export interface BuildPlan {
   platform: "amd-zen" | "intel-coffee-lake" | "intel-comet-lake" | "unknown";
   profile: string;
@@ -165,6 +182,8 @@ export interface BuildPlan {
   igpuPlatformId?: string;
   bootArgs: string[];
   setupVirtualMap?: boolean;
+  intelClockMode?: "awac" | "manual";
+  intelClockEvidence?: AcpiClockEvidence;
   autoConfigSupported: boolean;
   components: string[];
   acpi: string[];
@@ -174,6 +193,8 @@ export interface BuildPlan {
 
 export interface BuildPreferences {
   amdSetupVirtualMap?: boolean;
+  intelClockMode?: "awac" | "manual";
+  intelClockEvidence?: AcpiClockEvidence;
   customUsbMapIncluded?: boolean;
   unsupportedGpuMode?: "disable" | "preserve";
 }
@@ -224,6 +245,8 @@ export interface EfiBuildManifest {
   igpuPlatformId?: string;
   bootArgs: string[];
   setupVirtualMap?: boolean;
+  intelClockMode?: "awac" | "manual";
+  intelClockEvidence?: AcpiClockEvidence;
   autoConfigSupported: boolean;
   components: LockedComponent[];
   acpi: string[];

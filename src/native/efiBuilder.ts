@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { EfiBuildManifest } from "../domain/types";
+import type { AcpiClockEvidence, EfiBuildManifest } from "../domain/types";
 
 export interface ScaffoldResult {
   outputPath: string;
@@ -118,6 +118,10 @@ export function buildEfiScaffold(
 
 export function selectUsbMap(): Promise<UsbMapSelection | null> {
   return invoke<UsbMapSelection | null>("select_usb_map");
+}
+
+export function selectAcpiClockEvidence(): Promise<AcpiClockEvidence | null> {
+  return invoke<AcpiClockEvidence | null>("select_acpi_clock_evidence");
 }
 
 export function validateCustomEfi(): Promise<EfiValidationResult | null> {

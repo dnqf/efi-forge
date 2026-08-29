@@ -1,20 +1,20 @@
 # EFI Forge（暂定名）
 
-EFI Forge 是一个 Windows-first 的 OpenCore 配置与安装介质助手。它通过硬件扫描、可追溯的兼容性规则和固定版本的可信上游组件，为目标电脑生成专属 EFI 构建计划。
+EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工作台。它通过硬件扫描、可追溯的兼容性规则和固定版本的可信上游组件，为目标电脑生成候选 EFI 构建计划。
 
-当前公开测试版为 `v0.1.9 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、真机验证证据和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
+当前公开测试版为 `v0.1.10 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
 ## 下载
 
-- 版本说明：[EFI Forge v0.1.9 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)
-- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.9/EFI-Forge_0.1.9_x64-setup.exe)
-- 历史版本：[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
+- 版本说明：[EFI Forge v0.1.10 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)
+- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.10/EFI-Forge_0.1.10_x64-setup.exe)
+- 历史版本：[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)、[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
 
 不要使用来源不明的 GitHub 加速站。安装后仍应核对安装程序哈希；当前 Alpha 尚未数字签名，Windows 可能显示未知发布者。
 
-- EXE SHA-256：`A6F087F85EF73F182D2BA2A729FF80F7236434E09895944303C69F18D23A3AFD`
+- EXE SHA-256：`8D0FA9D12586183AFEB99738CF5CE4E5DEE19308E2AF6D13B3FE0F2CC5CF9BE7`
 
 ## 当前能力
 
@@ -32,6 +32,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置与安装介质助手。它
 - 锁定 OpenCore、常见 Kext 与审核 ACPI 的版本、资产大小和 SHA-256
 - 导出确定性的候选 EFI 构建清单，并显示静态验证与实机验证闸门
 - 为已审核的 AMD B450、Intel Coffee Lake / Comet Lake 台式机组合生成 config.plist 并运行同版本 `ocvalidate`
+- 可只读校验用户选择的 `DSDT.aml`，记录 ACPI000E/PNP0B00/STAS 静态线索与 SHA-256，并由用户显式决定 AWAC 或手动 RTC0 路径；该能力只提供静态字节线索，不等于 ACPI 语义或实机验证
 - 支持安全导入用户自己的 codeless `UTBMap.kext`，拒绝可执行内容、符号链接和 Windows 重解析点
 - 支持自有或社区完整 EFI 的只读结构检查；不会执行其中携带的程序
 - 支持只读导入单独的 Kext、AML 和 x86_64 UEFI Driver，核验内部格式、逻辑身份、体积与 SHA-256 后再与项目候选逐项比较
@@ -44,6 +45,14 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置与安装介质助手。它
 - 项目生成或受控组件 EFI 会计算真实 `config.plist` SHA-256；用户可记录 Picker、Recovery、安装、桌面与外设观察项，导出并回导精确绑定的脱敏验证证据
 - 固定硬件回归矩阵包含 ThinkPad T430/T480/T490、常见 Z390/Z490、ASUS Z490、Dell OptiPlex 与高风险 NVIDIA/PM981 组合；矩阵验证规则决策，不等于这些机器已完成真机安装
 - 使用当前 Windows 机器验证原生扫描器
+
+## 推荐使用流程
+
+1. **取得硬件报告**：优先在目标电脑上执行只读扫描；目标电脑无法运行工具时，从另一台电脑导入由 EFI Forge 导出的脱敏报告。演示和固定测试样本只能预览，不能生成或导出 EFI。
+2. **看懂兼容风险**：先看“需要关注”摘要，再核对 CPU、显卡、网络、存储、BIOS 和 ACPI 细节。信息不足或可能不兼容只降低可信度，不会阻止继续。
+3. **选择 EFI 起点**：普通用户优先选择 A 路径生成项目候选；已有专属 EFI 的用户可选择 B 路径进行只读检查。个人组件与双 EFI 融合位于高级选项中。
+4. **完成结构校验**：只有目录结构、组件引用、锁定组件完整性和适用的 `ocvalidate` 检查通过后，才能进入复制步骤。通过不等于真机可启动。
+5. **复制并启动测试**：只复制到用户选择的空目录；工具不格式化、不分区、不覆盖文件，也不制作完整 macOS 安装盘。随后应使用独立介质测试 OpenCore 和 Recovery。
 
 ## 本地运行
 
