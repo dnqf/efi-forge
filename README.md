@@ -4,7 +4,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 
 当前公开测试版为 `v0.1.10 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
 
-`main` 分支正在准备 `v0.1.11` 开发候选；它不等于已发布安装包，下载用户仍应以上述 Release 页的公开版本为准。
+`main` 分支正在准备 `v0.1.12` Alpha 候选；它不等于已发布安装包，下载用户仍应以上述 Release 页的公开版本为准。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
@@ -118,4 +118,4 @@ npm run desktop:build
 - 单独组件默认不会修改 `config.plist`；只有逐项明确选择启用才会写入最小条目，并使用锁定 OpenCore 包中的同版本 `ocvalidate` 校验
 - 受控写入不会修改 `PlatformInfo`、`DeviceProperties`、NVRAM、Kernel Patch、Emulate 或 Quirks；受保护区域变化即停止
 
-详细范围见 [v0.1.11 候选说明](docs/RELEASE_NOTES_v0.1.11.zh-CN.md)、[v0.1.11 深度审计](docs/V0.1.11_DEEP_AUDIT_REPORT.zh-CN.md)、[v0.1.11 多视角复核](docs/V0.1.11_MULTI_PERSPECTIVE_AUDIT.zh-CN.md)、[隐私说明](PRIVACY.md)、[ThinkPad 专项范围](docs/THINKPAD_SUPPORT.zh-CN.md)、[daliansky 目录补充实现提示词](docs/CODEX_DALIANSKY_CATALOG_SUPPLEMENT_PROMPT.zh-CN.md)、[产品需求文档](docs/PRD.zh-CN.md)、[验证流程](docs/VALIDATION_WORKFLOW.zh-CN.md)、[候选版本发布流程](docs/RELEASE_PROCESS.zh-CN.md)、[参与贡献](CONTRIBUTING.md)、[阶段 2–6 进度报告](docs/STAGES_2_6_PROGRESS_REPORT.zh-CN.md) 和 [工程实现提示词](docs/ENGINEERING_PROMPT.zh-CN.md)。
+详细范围见 [v0.1.12 候选说明](docs/RELEASE_NOTES_v0.1.12.zh-CN.md)、[v0.1.12 多角度审计](docs/V0.1.12_MULTI_ANGLE_AUDIT.zh-CN.md)、[v0.1.11 深度审计](docs/V0.1.11_DEEP_AUDIT_REPORT.zh-CN.md)、[隐私说明](PRIVACY.md)、[ThinkPad 专项范围](docs/THINKPAD_SUPPORT.zh-CN.md)、[daliansky 目录补充实现提示词](docs/CODEX_DALIANSKY_CATALOG_SUPPLEMENT_PROMPT.zh-CN.md)、[产品需求文档](docs/PRD.zh-CN.md)、[验证流程](docs/VALIDATION_WORKFLOW.zh-CN.md)、[候选版本发布流程](docs/RELEASE_PROCESS.zh-CN.md)、[参与贡献](CONTRIBUTING.md)、[阶段 2–6 进度报告](docs/STAGES_2_6_PROGRESS_REPORT.zh-CN.md) 和 [工程实现提示词](docs/ENGINEERING_PROMPT.zh-CN.md)。

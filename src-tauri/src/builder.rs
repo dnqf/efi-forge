@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
@@ -1561,6 +1562,7 @@ fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf
     if destination.is_file() && verify_file(&destination, component)? {
         return Ok(destination);
     }
+    let rejected_cache = destination.exists();
 
     let partial = cache.join(format!("{}.{}.part", component.asset_name, Uuid::new_v4()));
     let client = reqwest::blocking::Client::builder()
@@ -1589,12 +1591,18 @@ fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf
         }
     }
     let response = response.ok_or_else(|| {
+        let cache_note = if rejected_cache {
+            "；本地缓存未通过锁定大小/SHA-256，已拒绝复用"
+        } else {
+            "；本地没有可复用的已验证缓存"
+        };
         format!(
-            "下载 {} 失败（已尝试 3 次）：{}",
+            "下载 {} 失败（已尝试 3 次）：{}{}。请检查系统时间、代理、防火墙和 GitHub 连接后重试",
             component.name,
             last_error
                 .map(|error| error.to_string())
-                .unwrap_or_else(|| "未知网络错误".to_string())
+                .unwrap_or_else(|| "未知网络错误".to_string()),
+            cache_note,
         )
     })?;
     if response
@@ -2380,6 +2388,45 @@ fn is_forbidden_windows_payload(path: &Path) -> bool {
         })
 }
 
+fn portable_entry_key(name: &OsStr) -> Result<String, String> {
+    let name = name
+        .to_str()
+        .ok_or_else(|| "EFI 条目名称不是有效 Unicode，无法可靠复制到 FAT32。".to_string())?;
+    if name.is_empty() || matches!(name, "." | "..") {
+        return Err("EFI 条目名称无效。".into());
+    }
+    if name.ends_with([' ', '.']) {
+        return Err(format!("EFI 条目名称不能以空格或句点结尾：{name}"));
+    }
+    if name.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            )
+    }) {
+        return Err(format!("EFI 条目名称包含 Windows/FAT32 不安全字符：{name}"));
+    }
+
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+            });
+    if reserved {
+        return Err(format!("EFI 条目使用 Windows 保留设备名：{name}"));
+    }
+
+    Ok(name.to_lowercase())
+}
+
+pub(crate) fn validate_portable_entry_name(name: &OsStr) -> Result<(), String> {
+    portable_entry_key(name).map(|_| ())
+}
+
 pub(crate) fn canonicalize_plain_path(path: &Path, label: &str) -> Result<PathBuf, String> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| format!("无法读取{label}：{error}"))?;
@@ -2412,11 +2459,23 @@ fn validate_efi_tree_safety(
         return Ok(());
     }
 
+    let mut portable_names = BTreeMap::<String, String>::new();
     for entry in fs::read_dir(current)
         .map_err(|error| format!("无法读取 EFI 目录 {}：{error}", current.display()))?
     {
         let entry = entry.map_err(|error| format!("无法读取 EFI 目录条目：{error}"))?;
         let path = entry.path();
+        match portable_entry_key(&entry.file_name()) {
+            Ok(key) => {
+                let display_name = entry.file_name().to_string_lossy().into_owned();
+                if let Some(existing) = portable_names.insert(key, display_name.clone()) {
+                    errors.push(format!(
+                        "EFI 同一目录包含 FAT32 不可区分的名称：{existing} / {display_name}"
+                    ));
+                }
+            }
+            Err(error) => errors.push(error),
+        }
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("无法检查 EFI 条目 {}：{error}", path.display()))?;
         budget.entries += 1;
@@ -2474,8 +2533,16 @@ fn copy_directory_bounded(
     }
     fs::create_dir(destination).map_err(|error| format!("无法创建目标 EFI 目录：{error}"))?;
     let mut copied = 0;
+    let mut portable_names = BTreeMap::<String, String>::new();
     for entry in fs::read_dir(source).map_err(|error| format!("无法读取源 EFI：{error}"))? {
         let entry = entry.map_err(|error| format!("无法读取源 EFI 条目：{error}"))?;
+        let display_name = entry.file_name().to_string_lossy().into_owned();
+        let portable_key = portable_entry_key(&entry.file_name())?;
+        if let Some(existing) = portable_names.insert(portable_key, display_name.clone()) {
+            return Err(format!(
+                "EFI 同一目录包含 FAT32 不可区分的名称，复制已停止：{existing} / {display_name}"
+            ));
+        }
         let metadata = fs::symlink_metadata(entry.path())
             .map_err(|error| format!("无法检查 EFI 条目：{error}"))?;
         budget.entries += 1;
@@ -3120,6 +3187,35 @@ mod tests {
 
         fs::remove_dir_all(source).unwrap();
         fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn rejects_windows_reserved_and_nonportable_efi_entry_names() {
+        for name in ["CON", "con.txt", "LPT9.efi", "bad:name.efi", "trailing. "] {
+            let error = validate_portable_entry_name(OsStr::new(name)).unwrap_err();
+            assert!(
+                error.contains("保留设备名")
+                    || error.contains("不安全字符")
+                    || error.contains("结尾"),
+                "unexpected error for {name}: {error}"
+            );
+        }
+        for name in [
+            "BOOTx64.efi",
+            "OpenCore.efi",
+            "SSDT-EC-USBX.aml",
+            "显卡配置.plist",
+        ] {
+            validate_portable_entry_name(OsStr::new(name)).unwrap();
+        }
+    }
+
+    #[test]
+    fn fat32_entry_keys_are_case_insensitive() {
+        assert_eq!(
+            portable_entry_key(OsStr::new("Driver.efi")).unwrap(),
+            portable_entry_key(OsStr::new("driver.EFI")).unwrap()
+        );
     }
 
     #[test]

@@ -681,6 +681,19 @@ h2 {
   line-height: 1.6;
 }
 
+.scan-error span {
+  white-space: pre-line;
+}
+
+h2[tabindex="-1"] {
+  scroll-margin-top: 18px;
+}
+
+h2[tabindex="-1"]:focus-visible {
+  outline: 3px solid rgba(47, 128, 237, 0.22);
+  outline-offset: 5px;
+}
+
 .report-notice {
   margin: -8px 0 20px;
   padding: 10px 13px;

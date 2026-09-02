@@ -45,13 +45,14 @@ EFI Forge 把“规则正确”“EFI 结构正确”和“目标电脑实际可
 
 只有 `install-verified` 可以作为自动推荐来源。社区整包仍需同时满足许可证、精确硬件匹配和维护者审核策略。
 
-## 6. 下一实现闸门
+## 6. 当前构建与复制闸门
 
-启用 EFI ZIP 导出前必须完成：
+桌面版在用户明确开始构建后执行：
 
-1. 按 `components.lock.json` 下载并校验官方 Release；
-2. 从同版本 `Sample.plist` 生成配置；
-3. 只复制清单中引用的 Kext、Drivers 和 SSDT；
-4. 使用同版本 `ocvalidate` 校验；
-5. 输出不含公共 SMBIOS 身份的 ZIP；
-6. 将验证结果和工具日志写入构建报告。
+1. 按 `components.lock.json` 下载固定版本和大小的上游资产，并验证 SHA-256；
+2. 从同版本 `Sample.plist` 生成候选配置，只复制清单引用的 Kext、Drivers 与 SSDT；
+3. 使用同一锁定 OpenCore 版本的 `ocvalidate` 校验项目候选；
+4. 自定义 EFI 只做静态结构与引用检查，不执行其中的工具或二进制；
+5. 拒绝重解析点、危险 Windows 载荷、超限目录、Windows/FAT32 不可移植名称和同目录大小写碰撞；
+6. 只向新目录或用户选择的空目标复制，复制完成后重新校验暂存副本再提交；
+7. 用户可导出不含本机路径和序列号的转移/求助摘要，真机结果则用与硬件、BIOS、OpenCore 和 config 哈希绑定的验证证据记录。

@@ -1,7 +1,7 @@
 {
   "name": "efi-forge",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.12",
   "homepage": "https://github.com/dnqf/efi-forge",
   "repository": {
     "type": "git",
@@ -17,7 +17,8 @@
     "start:app": "node scripts/serve.mjs",
     "test": "vitest run --configLoader runner",
     "test:catalog": "node --test scripts/import-daliansky-catalog.test.mjs",
-    "check": "npm test && npm run test:catalog && npm run build",
+    "check:version": "node scripts/verify-version-sync.mjs",
+    "check": "npm run check:version && npm test && npm run test:catalog && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

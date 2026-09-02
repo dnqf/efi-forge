@@ -980,6 +980,9 @@ fn discover_components(
     if depth > MAX_DEPTH {
         return Err(format!("组件目录超过 {MAX_DEPTH} 层，扫描已停止。"));
     }
+    if let Some(name) = path.file_name() {
+        builder::validate_portable_entry_name(name)?;
+    }
     let metadata =
         fs::symlink_metadata(path).map_err(|error| format!("无法检查组件来源：{error}"))?;
     if metadata.file_type().is_symlink() || builder::is_reparse_point(path)? {
@@ -1289,6 +1292,7 @@ fn collect_directory_files(
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let entry_path = entry.path();
+        builder::validate_portable_entry_name(&entry.file_name())?;
         let metadata = fs::symlink_metadata(&entry_path)
             .map_err(|error| format!("无法检查组件文件：{error}"))?;
         if metadata.file_type().is_symlink() || builder::is_reparse_point(&entry_path)? {

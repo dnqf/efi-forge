@@ -59,6 +59,8 @@ import {
   workflowStepCopy,
   type WorkflowStep,
 } from "./workflow/userJourney";
+import { formatOperationFailure } from "./workflow/operationFailure";
+import { createHandoffSummary, serializeHandoffSummary } from "./workflow/handoffSummary";
 import {
   createVerificationEvidence,
   mayPromoteVerification,
@@ -152,6 +154,8 @@ const optionalVerificationChecks: { key: keyof VerificationObservations; label: 
   { key: "usb", label: "USB" },
   { key: "sleep", label: "睡眠/唤醒" },
 ];
+
+const appVersion = "0.1.12";
 
 function deviceIdentityCopy(device: HardwareReport["gpus"][number] | undefined): string {
   if (!device) return "----:----";
@@ -279,6 +283,8 @@ function App() {
   const [verificationReview, setVerificationReview] = useState<string | null>(null);
   const reportInputRef = useRef<HTMLInputElement>(null);
   const verificationInputRef = useRef<HTMLInputElement>(null);
+  const workflowHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousWorkflowStepRef = useRef<WorkflowStep>(workflowStep);
   const workflowEpochRef = useRef(0);
   const hasNativeRuntime = nativeRuntimeAvailable();
 
@@ -291,6 +297,15 @@ function App() {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (previousWorkflowStepRef.current === workflowStep) return;
+    previousWorkflowStepRef.current = workflowStep;
+    const frame = window.requestAnimationFrame(() => {
+      workflowHeadingRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [workflowStep]);
 
   const report = useMemo(
     () => evaluateCompatibility(hardware, targetMacOS, compatibilityRules),
@@ -577,7 +592,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`暂存包生成失败：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("暂存包生成失败", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
@@ -600,7 +615,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`USB Map 拒绝导入：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("USB Map 拒绝导入", error));
     }
   }
 
@@ -624,7 +639,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`DSDT 分析已停止：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("DSDT 分析已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
@@ -664,7 +679,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`EFI 校验失败：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("EFI 校验失败", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
@@ -701,7 +716,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`EFI 融合已停止：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("EFI 融合已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
@@ -746,7 +761,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`组件导入已停止：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("组件导入已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
@@ -794,7 +809,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`组件融合已停止：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("组件融合已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
@@ -829,7 +844,7 @@ function App() {
       );
       setVerificationReview("验证证据已导出；它不包含 SMBIOS 序列号，回导后仍会逐项核对硬件、BIOS、macOS、OpenCore 与 config 哈希。");
     } catch (error) {
-      setAssemblyError(`验证证据无法导出：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("验证证据无法导出", error));
     }
   }
 
@@ -853,7 +868,7 @@ function App() {
       }
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`验证证据导入失败：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("验证证据导入失败", error));
     }
   }
 
@@ -868,10 +883,32 @@ function App() {
       if (result) setCopyResult(result);
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
-      setAssemblyError(`复制已停止：${error instanceof Error ? error.message : String(error)}`);
+      setAssemblyError(formatOperationFailure("复制已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setCopyBusy(false);
     }
+  }
+
+  function exportHandoffSummary() {
+    if (!buildPlan || !efiValidation?.valid || !activeEfiSource) {
+      setAssemblyError("请先选择并校验一份完整 EFI，再导出转移与求助摘要。");
+      return;
+    }
+    const summary = createHandoffSummary({
+      appVersion,
+      hardware,
+      report,
+      reportSource: scanSource,
+      targetMacOS,
+      plan: buildPlan,
+      efiSource: activeEfiSource,
+      validation: efiValidation,
+    });
+    downloadJson(
+      `efi-forge-handoff-${buildPlan.profile}-macos-${targetMacOS}.json`,
+      serializeHandoffSummary(summary),
+    );
+    setReportNotice("已导出转移与求助摘要；不包含本机文件路径、序列号或网络凭据。");
   }
 
   return (
@@ -882,7 +919,7 @@ function App() {
             EF
           </span>
           <div>
-            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.11</p>
+            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.12</p>
             <h1>EFI Forge</h1>
           </div>
         </div>
@@ -907,6 +944,17 @@ function App() {
           </select>
         </div>
       </header>
+
+      <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        当前步骤：{workflowStepCopy[workflowStep - 1].title}。
+        {scanState === "scanning"
+          ? "正在读取硬件。"
+          : assemblyBusy
+            ? "正在处理 EFI 文件。"
+            : copyBusy
+              ? "正在安全复制 EFI。"
+              : workflowStepDetail(workflowStep)}
+      </div>
 
       <div className="workspace">
         <aside className="process-rail" aria-label="构建流程">
@@ -952,7 +1000,7 @@ function App() {
           <section className="canvas-heading">
             <div>
               <p className="eyebrow">TARGET MACHINE / LOCAL REPORT</p>
-              <h2>这台电脑的硬件指纹</h2>
+              <h2 ref={workflowHeadingRef} tabIndex={-1}>这台电脑的硬件指纹</h2>
               <p className="subcopy">
                 结论来自精确设备信息与审核规则，不复用第三方整包 EFI。
               </p>
@@ -1598,7 +1646,7 @@ function App() {
             <header className="assembly-header">
               <div>
                 <p className="eyebrow">STEP 03 / EFI ASSEMBLY</p>
-                <h2>EFI 组装工作区</h2>
+                <h2 ref={workflowHeadingRef} tabIndex={-1}>EFI 组装工作区</h2>
                 <p className="subcopy">
                   下载并校验官方组件，或验证你已有的完整 EFI。硬件警告不会剥夺继续权，结构损坏会停止。
                 </p>
@@ -2192,13 +2240,14 @@ function App() {
             <header className="assembly-header">
               <div>
                 <p className="eyebrow">STEP 04 / SAFE COPY</p>
-                <h2>复制 EFI 到测试分区或导出目录</h2>
+                <h2 ref={workflowHeadingRef} tabIndex={-1}>复制 EFI 到测试分区或导出目录</h2>
                 <p className="subcopy">将已完成当前检查的 EFI 复制到你选择的空位置。此版本不格式化磁盘、不创建分区、不覆盖已有文件。</p>
               </div>
               <span className="assembly-mode">只复制 / 不格式化</span>
             </header>
 
             {assemblyError && <div className="scan-error" role="alert"><strong>操作已停止</strong><span>{assemblyError}</span></div>}
+            {reportNotice && <div className="report-notice" role="status">{reportNotice}</div>}
             <div className="experimental-warning assembly-warning" role="status">
               <strong>空文件夹不等于可启动介质</strong>
               <span>如果只选择普通文件夹，结果只能用于导出和备份。需要真机启动时，请先自行准备独立 U 盘的 FAT32 EFI 分区，挂载后选择其根目录。</span>
@@ -2259,6 +2308,9 @@ function App() {
               <button className="secondary-button" type="button" onClick={() => setWorkflowStep(3)} disabled={copyBusy}>← 返回 EFI 组装</button>
               <div>
                 <span>只接受空目录；发现已有内容将自动停止</span>
+                <button className="secondary-button" type="button" onClick={exportHandoffSummary} disabled={copyBusy}>
+                  导出转移 / 求助摘要
+                </button>
                 <button className="build-button" type="button" onClick={copyValidatedEfi} disabled={copyBusy}>
                   {copyBusy ? "正在安全复制…" : copyResult ? "重新选择空位置" : "选择空位置并复制 EFI"}
                 </button>
@@ -2277,7 +2329,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.11-dev</span>
+        <span>EFI Forge v0.1.12-dev</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

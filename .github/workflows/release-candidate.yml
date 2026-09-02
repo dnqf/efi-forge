@@ -30,19 +30,7 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm audit --audit-level=high
-      - name: Verify version synchronization
-        shell: pwsh
-        run: |
-          $packageVersion = (Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content -Raw -LiteralPath "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
-          $cargoText = Get-Content -Raw -LiteralPath "src-tauri/Cargo.toml"
-          $cargoMatch = [regex]::Match($cargoText, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
-          if (-not $cargoMatch.Success) { throw "Cannot read the Cargo package version." }
-          $cargoVersion = $cargoMatch.Groups[1].Value
-          $appText = Get-Content -Raw -LiteralPath "src/App.tsx"
-          if ($packageVersion -ne $tauriVersion -or $packageVersion -ne $cargoVersion -or $appText -notmatch [regex]::Escape("ALPHA $packageVersion")) {
-            throw "Version mismatch: package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion"
-          }
+      - run: npm run check:version
       - run: npm test
       - run: npm run test:catalog
       - run: npm run build
