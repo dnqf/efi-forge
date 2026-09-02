@@ -1,6 +1,6 @@
 [package]
 name = "efi-forge"
-version = "0.1.12"
+version = "0.1.13"
 description = "A traceable OpenCore compatibility and EFI build workbench"
 authors = ["EFI Forge contributors"]
 license = "MIT"

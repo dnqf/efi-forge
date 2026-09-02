@@ -172,6 +172,16 @@ const definitions: CompatibilityRuleDefinition[] = [
     source: "https://dortania.github.io/GPU-Buyers-Guide/modern-gpus/amd-gpu.html",
   },
   {
+    id: "gpu.amd.lexa-rx550.blocked",
+    category: "gpu",
+    status: "blocked",
+    macOS: ["13", "14", "15", "26"],
+    selector: { vendorIds: ["1002"], deviceIds: ["6995", "699F"] },
+    message: "该 PCI ID 属于 Lexa 核心 RX 550，不能按受支持的 Baffin/Polaris 型号处理。",
+    action: "不要按 RX 560 规则自动伪装；保留用户自己的实测 spoof，或改用受支持图形设备。",
+    source: "https://dortania.github.io/GPU-Buyers-Guide/modern-gpus/amd-gpu.html",
+  },
+  {
     id: "gpu.amd.polaris.native",
     category: "gpu",
     status: "supported",
@@ -298,6 +308,19 @@ const definitions: CompatibilityRuleDefinition[] = [
     },
     message: "检测到 Intel 无线网卡；AirportItlwm/itlwm 必须匹配芯片与 macOS 大版本。",
     action: "不自动锁死无线方案，允许用户选择原生菜单或 HeliPort 路径。",
+    source: "https://openintelwireless.github.io/itlwm/Compat.html",
+  },
+  {
+    id: "network.intel.wireless-exact",
+    category: "network",
+    status: "partial",
+    macOS: ["13", "14", "15"],
+    selector: {
+      vendorIds: ["8086"],
+      deviceIds: ["08B1", "08B2", "095A", "24F3", "24FD", "A370", "2723", "2725", "51F0"],
+    },
+    message: "PCI ID 命中常见 Intel 无线系列；具体支持仍取决于芯片修订和目标 macOS 分支。",
+    action: "只选择 itlwm 或 AirportItlwm 其中一条路径；蓝牙固件另行核对，不自动加入无线组件。",
     source: "https://openintelwireless.github.io/itlwm/Compat.html",
   },
   {
@@ -512,6 +535,12 @@ const metadata: Record<string, RuleRegistryMetadata> = {
     ["amd.rx580-2048sp.6fdf"],
     [{ type: "manual-review", value: "unsupported-external-gpu" }],
   ),
+  "gpu.amd.lexa-rx550.blocked": reviewed(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["amd.rx550.lexa.699f"],
+    [{ type: "manual-review", value: "unsupported-external-gpu" }],
+  ),
   "gpu.amd.polaris.native": reviewed(
     400,
     ["pci-vendor-id", "pci-device-id"],
@@ -586,6 +615,12 @@ const metadata: Record<string, RuleRegistryMetadata> = {
     ["pci-vendor-id", "device-name"],
     ["thinkpad.intel.wireless"],
     [{ type: "manual-review", value: "select-intel-wireless-stack" }],
+  ),
+  "network.intel.wireless-exact": experimental(
+    400,
+    ["pci-vendor-id", "pci-device-id"],
+    ["network.intel.wireless.2723"],
+    [{ type: "manual-review", value: "select-one-intel-wireless-stack" }],
   ),
   "network.intel.wireless-tahoe.manual": experimental(
     260,

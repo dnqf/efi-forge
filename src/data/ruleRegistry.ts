@@ -20,6 +20,9 @@ function selectorEvidence(category: DeviceCategory, selector: RuleSelector): Rul
   }
   if (selector.vendorIds) evidence.push("pci-vendor-id");
   if (selector.deviceIds) evidence.push("pci-device-id");
+  if (selector.subsystemIds) evidence.push("pci-subsystem-id");
+  if (selector.classCodes) evidence.push("pci-class-code");
+  if (selector.revisionIds) evidence.push("pci-revision-id");
   if (selector.nameIncludes) evidence.push("device-name");
   return evidence;
 }

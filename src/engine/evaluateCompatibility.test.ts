@@ -49,6 +49,7 @@ describe("compatibility engine", () => {
       "graphics",
       "ethernet",
       "wireless",
+      "bluetooth",
       "audio",
       "storage",
       "usb",
@@ -56,8 +57,79 @@ describe("compatibility engine", () => {
       "battery",
       "backlight",
       "sleep",
+      "thunderbolt",
+      "camera",
+      "fingerprint",
+      "card-reader",
     ]);
     expect(report.modules.find((module) => module.id === "usb")?.status).toBe("partial");
+  });
+
+  it("uses schema v2 evidence without converting Windows clues into support claims", () => {
+    const hardware = {
+      ...sampleHardware,
+      schemaVersion: 2 as const,
+      system: { ...sampleHardware.system, kind: "laptop" as const },
+      storage: [{
+        id: "storage-generic",
+        name: "Generic solid state disk",
+        vendorId: "",
+        deviceId: "",
+      }],
+      evidence: {
+        storageMode: "raid-vmd" as const,
+        storageControllers: [{
+          id: "storage-controller-0",
+          name: "Intel VMD Controller",
+          vendorId: "8086",
+          deviceId: "9A0B",
+          classCode: "010802",
+        }],
+        usbControllers: [{
+          id: "usb-controller-0",
+          name: "Intel xHCI Controller",
+          vendorId: "8086",
+          deviceId: "A36D",
+          classCode: "0C0330",
+        }],
+        thunderboltControllers: [],
+        bluetooth: [{
+          id: "bluetooth-0",
+          name: "Intel Wireless Bluetooth",
+          vendorId: "8086",
+          deviceId: "2723",
+          identitySource: "parent-pci" as const,
+        }],
+        inputControllers: [{
+          id: "input-controller-0",
+          name: "Intel Serial IO I2C Host Controller",
+          vendorId: "8086",
+          deviceId: "A368",
+        }],
+        laptop: {
+          batteryDetected: true,
+          i2cDetected: true,
+          ps2Detected: false,
+          intelSstDetected: true,
+          cameraDetected: true,
+          fingerprintDetected: true,
+          cardReaderDetected: false,
+        },
+      },
+    };
+
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+
+    expect(report.canContinue).toBe(true);
+    expect(report.modules.find((module) => module.id === "bluetooth")?.status).toBe("partial");
+    expect(report.modules.find((module) => module.id === "laptop-input")?.status).toBe("partial");
+    expect(report.modules.find((module) => module.id === "battery")?.status).toBe("partial");
+    expect(report.modules.find((module) => module.id === "fingerprint")?.status).toBe("partial");
+    expect(report.modules.find((module) => module.id === "fingerprint")?.summary).toContain("通常不支持");
+    expect(plan?.components).toContain("NVMeFix.kext");
+    expect(plan?.notes.join(" ")).toContain("VMD/RST/RAID");
+    expect(plan?.autoConfigSupported).toBe(false);
   });
 
   it("warns about known unsupported graphics and risky storage without removing choice", () => {
@@ -502,6 +574,19 @@ describe("compatibility engine", () => {
     expect(plan?.bootArgs).toContain("-wegnoegpu");
   });
 
+  it("does not confuse a Lexa RX 550 with native Baffin Polaris", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [{ id: "gpu-rx550-lexa", name: "AMD Radeon RX 550", vendorId: "1002", deviceId: "699F" }],
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+
+    expect(report.findings.find((finding) => finding.subjectId === "gpu-rx550-lexa")).toEqual(
+      expect.objectContaining({ status: "blocked", ruleId: "gpu.amd.lexa-rx550.blocked" }),
+    );
+    expect(report.canContinue).toBe(true);
+  });
+
   it("uses registry priority instead of array order for overlapping GPU rules", () => {
     const hardware = {
       ...sampleHardware,
@@ -622,6 +707,21 @@ describe("compatibility engine", () => {
       expect.objectContaining({ status: "partial", ruleId: "network.intel.i211.partial" }),
     );
     expect(plan?.components).not.toContain("AppleIGB.kext");
+  });
+
+  it("identifies common Intel Wi-Fi by PCI ID without enabling two competing stacks", () => {
+    const hardware = {
+      ...sampleHardware,
+      network: [{ id: "network-ax200", name: "Network Controller", vendorId: "8086", deviceId: "2723" }],
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+
+    expect(report.findings.find((finding) => finding.subjectId === "network-ax200")).toEqual(
+      expect.objectContaining({ status: "partial", ruleId: "network.intel.wireless-exact" }),
+    );
+    expect(plan?.components).not.toContain("itlwm.kext");
+    expect(plan?.components).not.toContain("AirportItlwm.kext");
   });
 
   it("adds locked NVMeFix for detected NVMe storage while preserving model risk warnings", () => {

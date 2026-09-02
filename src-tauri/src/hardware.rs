@@ -12,6 +12,8 @@ pub struct HardwareReport {
     network: Vec<PciDevice>,
     audio: Vec<PciDevice>,
     storage: Vec<PciDevice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<HardwareEvidence>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -59,9 +61,47 @@ struct PciDevice {
     #[serde(skip_serializing_if = "Option::is_none")]
     subsystem_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    subsystem_vendor_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subsystem_device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     class_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    parent_vendor_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_class_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     identity_source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HardwareEvidence {
+    storage_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chipset: Option<PciDevice>,
+    storage_controllers: Vec<PciDevice>,
+    usb_controllers: Vec<PciDevice>,
+    thunderbolt_controllers: Vec<PciDevice>,
+    bluetooth: Vec<PciDevice>,
+    input_controllers: Vec<PciDevice>,
+    laptop: LaptopEvidence,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LaptopEvidence {
+    battery_detected: bool,
+    i2c_detected: bool,
+    ps2_detected: bool,
+    intel_sst_detected: bool,
+    camera_detected: bool,
+    fingerprint_detected: bool,
+    card_reader_detected: bool,
 }
 
 const WINDOWS_HARDWARE_SCRIPT: &str = r#"
@@ -69,44 +109,23 @@ $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
 
-function Get-PciIdentity {
-  param([string]$InstanceId, [bool]$AllowParent)
-  $current = $InstanceId
-  for ($depth = 0; $depth -lt 8 -and $current; $depth++) {
-    if ($current -match '^PCI\\') {
-      $classCode = $null
-      $compatibleIds = (Get-PnpDeviceProperty -InstanceId $current -KeyName 'DEVPKEY_Device_CompatibleIds').Data
-      foreach ($compatibleId in @($compatibleIds)) {
-        if ([string]$compatibleId -match 'CC_([0-9A-Fa-f]{6})') {
-          $classCode = $Matches[1].ToUpperInvariant()
-          break
-        }
-      }
-      return [PSCustomObject]@{
-        instanceId = $current
-        source = if ($depth -eq 0) { 'direct-pci' } else { 'parent-pci' }
-        classCode = $classCode
-      }
-    }
-    if (-not $AllowParent) { break }
-    $parent = (Get-PnpDeviceProperty -InstanceId $current -KeyName 'DEVPKEY_Device_Parent').Data
-    if (-not $parent -or [string]$parent -eq $current) { break }
-    $current = [string]$parent
-  }
-  return $null
-}
-
 function Convert-Device {
   param([object]$Item, [string]$Prefix, [int]$Index)
   $pnp = [string]$Item.PNPDeviceID
-  $identity = Get-PciIdentity $pnp ($Prefix -eq 'storage')
-  $pciId = if ($identity) { [string]$identity.instanceId } else { $pnp }
   $vendorId = ''
   $deviceId = ''
   $subsystemId = $null
-  if ($pciId -match 'VEN_([0-9A-Fa-f]{4})') { $vendorId = $Matches[1].ToUpperInvariant() }
-  if ($pciId -match 'DEV_([0-9A-Fa-f]{4})') { $deviceId = $Matches[1].ToUpperInvariant() }
-  if ($pciId -match 'SUBSYS_([0-9A-Fa-f]{8})') { $subsystemId = $Matches[1].ToUpperInvariant() }
+  $subsystemVendorId = $null
+  $subsystemDeviceId = $null
+  $revisionId = $null
+  if ($pnp -match 'VEN_([0-9A-Fa-f]{4})') { $vendorId = $Matches[1].ToUpperInvariant() }
+  if ($pnp -match 'DEV_([0-9A-Fa-f]{4})') { $deviceId = $Matches[1].ToUpperInvariant() }
+  if ($pnp -match 'SUBSYS_([0-9A-Fa-f]{8})') {
+    $subsystemId = $Matches[1].ToUpperInvariant()
+    $subsystemDeviceId = $subsystemId.Substring(0, 4)
+    $subsystemVendorId = $subsystemId.Substring(4, 4)
+  }
+  if ($pnp -match 'REV_([0-9A-Fa-f]{2})') { $revisionId = $Matches[1].ToUpperInvariant() }
   $deviceName = if ($Item.Model) { [string]$Item.Model } elseif ($Item.Name) { [string]$Item.Name } else { 'Unknown device' }
   [PSCustomObject]@{
     id = "$Prefix-$Index"
@@ -114,8 +133,55 @@ function Convert-Device {
     vendorId = $vendorId
     deviceId = $deviceId
     subsystemId = $subsystemId
-    classCode = if ($identity) { $identity.classCode } else { $null }
-    identitySource = if ($identity) { $identity.source } else { 'name-only' }
+    subsystemVendorId = $subsystemVendorId
+    subsystemDeviceId = $subsystemDeviceId
+    revisionId = $revisionId
+    classCode = $null
+    parentVendorId = $null
+    parentDeviceId = $null
+    parentClassCode = $null
+    identitySource = if ($pnp -match '^PCI\\') { 'direct-pci' } else { 'name-only' }
+  }
+}
+
+function Convert-PnpEvidence {
+  param([object]$Item, [string]$Prefix, [int]$Index)
+  $pnp = [string]$Item.PNPDeviceID
+  $vendorId = ''
+  $deviceId = ''
+  $subsystemId = $null
+  $subsystemVendorId = $null
+  $subsystemDeviceId = $null
+  $revisionId = $null
+  $classCode = $null
+  if ($pnp -match 'VEN_([0-9A-Fa-f]{4})') { $vendorId = $Matches[1].ToUpperInvariant() }
+  if ($pnp -match 'DEV_([0-9A-Fa-f]{4})') { $deviceId = $Matches[1].ToUpperInvariant() }
+  if ($pnp -match 'SUBSYS_([0-9A-Fa-f]{8})') {
+    $subsystemId = $Matches[1].ToUpperInvariant()
+    $subsystemDeviceId = $subsystemId.Substring(0, 4)
+    $subsystemVendorId = $subsystemId.Substring(4, 4)
+  }
+  if ($pnp -match 'REV_([0-9A-Fa-f]{2})') { $revisionId = $Matches[1].ToUpperInvariant() }
+  foreach ($compatibleId in @($Item.CompatibleID) + @($Item.HardwareID)) {
+    if ([string]$compatibleId -match 'CC_([0-9A-Fa-f]{6})') {
+      $classCode = $Matches[1].ToUpperInvariant()
+      break
+    }
+  }
+  [PSCustomObject]@{
+    id = "$Prefix-$Index"
+    name = if ($Item.Name) { [string]$Item.Name } else { 'Unknown device' }
+    vendorId = $vendorId
+    deviceId = $deviceId
+    subsystemId = $subsystemId
+    subsystemVendorId = $subsystemVendorId
+    subsystemDeviceId = $subsystemDeviceId
+    revisionId = $revisionId
+    classCode = $classCode
+    parentVendorId = $null
+    parentDeviceId = $null
+    parentClassCode = $null
+    identitySource = if ($pnp -match '^PCI\\') { 'direct-pci' } else { 'name-only' }
   }
 }
 
@@ -172,8 +238,81 @@ foreach ($item in @(Get-CimInstance Win32_DiskDrive)) {
   $index++
 }
 
+$pnpDevices = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID })
+
+$storageControllers = @()
+$index = 0
+foreach ($item in @($pnpDevices | Where-Object {
+  $_.PNPClass -in @('SCSIAdapter', 'HDC', 'IDEController') -or
+  [string]$_.Name -match '(?i)NVMe|VMD|Volume Management|Rapid Storage|RST|RAID|SATA|AHCI'
+} | Select-Object -First 16)) {
+  $storageControllers += Convert-PnpEvidence $item 'storage-controller' $index
+  $index++
+}
+
+$usbControllers = @()
+$index = 0
+foreach ($item in @($pnpDevices | Where-Object {
+  [string]$_.Name -match '(?i)xHCI|USB.*Host Controller|Host Controller.*USB' -or
+  ([string]$_.PNPDeviceID -match '^PCI\\' -and (@($_.CompatibleID) + @($_.HardwareID)) -match '(?i)CC_0C03')
+} | Select-Object -First 16)) {
+  $usbControllers += Convert-PnpEvidence $item 'usb-controller' $index
+  $index++
+}
+
+$thunderboltControllers = @()
+$index = 0
+foreach ($item in @($pnpDevices | Where-Object {
+  [string]$_.Name -match '(?i)Thunderbolt|USB4'
+} | Select-Object -First 16)) {
+  $thunderboltControllers += Convert-PnpEvidence $item 'thunderbolt-controller' $index
+  $index++
+}
+
+$bluetooth = @()
+$index = 0
+foreach ($item in @($pnpDevices | Where-Object {
+  $_.PNPClass -eq 'Bluetooth' -or [string]$_.Name -match '(?i)Bluetooth'
+} | Select-Object -First 16)) {
+  $bluetooth += Convert-PnpEvidence $item 'bluetooth' $index
+  $index++
+}
+
+$inputControllers = @()
+$index = 0
+foreach ($item in @($pnpDevices | Where-Object {
+  [string]$_.Name -match '(?i)I2C|PS/2|PS2|GPIO.*Controller|Serial IO'
+} | Select-Object -First 16)) {
+  $inputControllers += Convert-PnpEvidence $item 'input-controller' $index
+  $index++
+}
+
+$chipsetItem = $pnpDevices | Where-Object {
+  [string]$_.PNPDeviceID -match '^PCI\\' -and [string]$_.Name -match '(?i)LPC|PCH|ISA Bridge'
+} | Select-Object -First 1
+$chipset = if ($chipsetItem) { Convert-PnpEvidence $chipsetItem 'chipset' 0 } else { $null }
+
+$storageMode = 'unknown'
+if (@($storageControllers | Where-Object {
+  $_.classCode -like '0104*' -or [string]$_.name -match '(?i)VMD|Volume Management|Rapid Storage|RST|RAID'
+}).Count -gt 0) {
+  $storageMode = 'raid-vmd'
+} elseif (@($storageControllers | Where-Object {
+  $_.classCode -like '0106*' -or [string]$_.name -match '(?i)AHCI'
+}).Count -gt 0) {
+  $storageMode = 'ahci'
+}
+
+$batteryDetected = @(Get-CimInstance Win32_Battery).Count -gt 0
+$i2cDetected = @($inputControllers | Where-Object { [string]$_.name -match '(?i)I2C|Serial IO' }).Count -gt 0
+$ps2Detected = @($inputControllers | Where-Object { [string]$_.name -match '(?i)PS/2|PS2' }).Count -gt 0
+$intelSstDetected = @($pnpDevices | Where-Object { [string]$_.Name -match '(?i)Intel.*Smart Sound|Intel.*SST' }).Count -gt 0
+$cameraDetected = @($pnpDevices | Where-Object { $_.PNPClass -eq 'Camera' -or [string]$_.Name -match '(?i)Integrated Camera|Webcam' }).Count -gt 0
+$fingerprintDetected = @($pnpDevices | Where-Object { [string]$_.Name -match '(?i)Fingerprint|Goodix|Synaptics.*WBDI' }).Count -gt 0
+$cardReaderDetected = @($pnpDevices | Where-Object { [string]$_.Name -match '(?i)Card Reader|SD Host|SDXC|Realtek.*Card' }).Count -gt 0
+
 $report = [PSCustomObject]@{
-  schemaVersion = 1
+  schemaVersion = 2
   capturedAt = (Get-Date).ToString('o')
   system = [PSCustomObject]@{
     kind = $kind
@@ -203,9 +342,27 @@ $report = [PSCustomObject]@{
   network = @($network)
   audio = @($audio)
   storage = @($storage)
+  evidence = [PSCustomObject]@{
+    storageMode = $storageMode
+    chipset = $chipset
+    storageControllers = @($storageControllers)
+    usbControllers = @($usbControllers)
+    thunderboltControllers = @($thunderboltControllers)
+    bluetooth = @($bluetooth)
+    inputControllers = @($inputControllers)
+    laptop = [PSCustomObject]@{
+      batteryDetected = $batteryDetected
+      i2cDetected = $i2cDetected
+      ps2Detected = $ps2Detected
+      intelSstDetected = $intelSstDetected
+      cameraDetected = $cameraDetected
+      fingerprintDetected = $fingerprintDetected
+      cardReaderDetected = $cardReaderDetected
+    }
+  }
 }
 
-$report | ConvertTo-Json -Depth 6 -Compress
+$report | ConvertTo-Json -Depth 8 -Compress
 "#;
 
 fn detect_cpu_generation(name: &str) -> String {
@@ -621,7 +778,7 @@ mod tests {
     fn scans_the_current_windows_machine() {
         let report = run_hardware_scan().expect("the local Windows scan should succeed");
 
-        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.schema_version, 2);
         assert!(!report.cpu.name.trim().is_empty());
         assert!(!report.board.model.trim().is_empty());
         assert!(!report.gpus.is_empty());
@@ -633,5 +790,14 @@ mod tests {
             .chain(&report.audio)
             .chain(&report.storage)
             .all(|device| device.identity_source.is_some()));
+        let evidence = report.evidence.as_ref().expect("schema v2 evidence");
+        assert!(!evidence.storage_controllers.is_empty());
+        assert!(matches!(
+            evidence.storage_mode.as_str(),
+            "ahci" | "raid-vmd" | "unknown"
+        ));
+        let exported = serde_json::to_string(&report).expect("serialize report");
+        assert!(!exported.contains("PNPDeviceID"));
+        assert!(!exported.contains("instanceId"));
     }
 }

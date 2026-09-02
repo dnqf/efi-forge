@@ -15,8 +15,8 @@ const amdLateBiosSensitiveChipsets = ["B450", "X470"];
 // conservative, explicit proxy and remains overrideable by the user.
 const amdLate2020BiosProxy = "2020-10-01";
 
-function detectChipset(boardModel: string): string {
-  const normalized = boardModel.toUpperCase();
+function detectChipset(hardware: HardwareReport): string {
+  const normalized = `${hardware.evidence?.chipset?.name ?? ""} ${hardware.board.model}`.toUpperCase();
   return [...coffeeAutoChipsets, ...cometAutoChipsets, ...amdAutoChipsets, "Z370", "H470", "H410"]
     .find((chipset) => normalized.includes(chipset)) ?? "unknown";
 }
@@ -84,16 +84,24 @@ export function createBuildPlan(
     notes.push("Intel I211 保留为实验网络方案；当前不自动加入没有可锁定正式 Release 的 AppleIGB。 ");
   }
 
-  const hasNvme = hardware.storage.some((device) => device.name.toUpperCase().includes("NVME"));
+  const hasNvme = hardware.storage.some((device) => device.name.toUpperCase().includes("NVME"))
+    || hardware.evidence?.storageControllers.some(
+      (device) => device.classCode?.startsWith("0108") || /NVME/i.test(device.name),
+    ) === true;
   if (hasNvme) {
     components.add("NVMeFix.kext");
     notes.push("检测到 NVMe，加入 NVMeFix 改善第三方控制器电源管理；它不能修复所有不兼容 SSD。 ");
+  }
+  if (hardware.evidence?.storageMode === "raid-vmd") {
+    notes.push(
+      "检测到 VMD/RST/RAID 控制器线索；不会自动更改 BIOS。请先核对 AHCI 切换、Windows 启动影响和替代安装磁盘。",
+    );
   }
 
   const isAmdZen = hardware.cpu.vendor === "amd" && hardware.cpu.generation.startsWith("zen-");
   const isCoffee = hardware.cpu.vendor === "intel" && hardware.cpu.generation === "coffee-lake";
   const isComet = hardware.cpu.vendor === "intel" && hardware.cpu.generation === "comet-lake";
-  const chipset = detectChipset(hardware.board.model);
+  const chipset = detectChipset(hardware);
   const platform: BuildPlan["platform"] = isAmdZen
     ? "amd-zen"
     : isCoffee

@@ -832,6 +832,105 @@ h2[tabindex="-1"]:focus-visible {
   line-height: 1.5;
 }
 
+.hardware-evidence-ledger {
+  margin: 0 0 20px;
+  border: 1px solid #cddfed;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #f9fcff, #eef7ff);
+  box-shadow: var(--shadow-card);
+}
+
+.hardware-evidence-ledger > summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.hardware-evidence-ledger > summary::-webkit-details-marker {
+  display: none;
+}
+
+.hardware-evidence-ledger h3 {
+  margin: 3px 0 5px;
+  font-size: 17px;
+}
+
+.hardware-evidence-ledger summary p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.hardware-evidence-ledger > summary > span {
+  flex: none;
+  padding: 6px 9px;
+  border-radius: 999px;
+  color: #245f88;
+  background: #dff0ff;
+  font: 9px/1 "Cascadia Mono", Consolas, monospace;
+}
+
+.hardware-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 18px;
+  border: 1px solid #d6e6f2;
+  background: #d6e6f2;
+}
+
+.hardware-evidence-grid article {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.hardware-evidence-grid span,
+.hardware-evidence-footnote span {
+  color: #5c7890;
+  font: 9px/1.3 "Cascadia Mono", Consolas, monospace;
+}
+
+.hardware-evidence-grid strong {
+  overflow-wrap: anywhere;
+  color: #183f5e;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.hardware-evidence-footnote {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  padding: 14px 18px 18px;
+}
+
+.hardware-evidence-footnote > div {
+  display: grid;
+  gap: 4px;
+}
+
+.hardware-evidence-footnote strong {
+  color: #315b7c;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.hardware-evidence-footnote small {
+  grid-column: 1 / -1;
+  padding-top: 9px;
+  border-top: 1px dotted #c7dbe9;
+  color: #647b8e;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
 .board-map {
   position: relative;
   display: grid;
@@ -3671,6 +3770,23 @@ footer {
 
   .compatibility-digest-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hardware-evidence-ledger > summary,
+  .hardware-evidence-footnote {
+    grid-template-columns: 1fr;
+  }
+
+  .hardware-evidence-ledger > summary {
+    display: grid;
+  }
+
+  .hardware-evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hardware-evidence-footnote small {
+    grid-column: auto;
   }
 
   .build-route-grid,

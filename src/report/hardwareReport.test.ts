@@ -20,7 +20,7 @@ describe("hardware report interchange", () => {
   });
 
   it("rejects unsupported schemas and malformed PCI IDs", () => {
-    expect(() => parseHardwareReport({ ...sampleHardware, schemaVersion: 2 })).toThrow(
+    expect(() => parseHardwareReport({ ...sampleHardware, schemaVersion: 3 })).toThrow(
       "schemaVersion",
     );
     expect(() =>
@@ -35,6 +35,97 @@ describe("hardware report interchange", () => {
         gpus: [{ ...sampleHardware.gpus[0], classCode: "DISPLAY" }],
       }),
     ).toThrow("Class Code");
+  });
+
+  it("accepts schema v2 controller evidence while keeping schema v1 compatible", () => {
+    const report = parseHardwareReport({
+      ...sampleHardware,
+      schemaVersion: 2,
+      evidence: {
+        storageMode: "raid-vmd",
+        chipset: {
+          id: "chipset-0",
+          name: "Intel Z490 LPC Controller",
+          vendorId: "8086",
+          deviceId: "0685",
+          revisionId: "00",
+          subsystemId: "86941043",
+          subsystemDeviceId: "8694",
+          subsystemVendorId: "1043",
+          classCode: "060100",
+          identitySource: "direct-pci",
+          pnpDeviceId: "PCI\\VEN_8086&DEV_0685&PRIVATE",
+        },
+        storageControllers: [{
+          id: "storage-controller-0",
+          name: "Intel Volume Management Device",
+          vendorId: "8086",
+          deviceId: "9A0B",
+          classCode: "010400",
+          parentVendorId: "8086",
+          parentDeviceId: "9A09",
+          parentClassCode: "060400",
+        }],
+        usbControllers: [],
+        thunderboltControllers: [],
+        bluetooth: [],
+        inputControllers: [],
+        laptop: {
+          batteryDetected: false,
+          i2cDetected: false,
+          ps2Detected: false,
+          intelSstDetected: false,
+          cameraDetected: false,
+          fingerprintDetected: false,
+          cardReaderDetected: false,
+        },
+      },
+    });
+
+    expect(report.schemaVersion).toBe(2);
+    expect(report.evidence?.storageMode).toBe("raid-vmd");
+    expect(report.evidence?.chipset).toEqual(expect.objectContaining({
+      revisionId: "00",
+      subsystemVendorId: "1043",
+      subsystemDeviceId: "8694",
+    }));
+    expect(serializeHardwareReport(report)).not.toContain("pnpDeviceId");
+    expect(parseHardwareReport(sampleHardware).schemaVersion).toBe(1);
+  });
+
+  it("rejects incomplete or malformed schema v2 evidence", () => {
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      schemaVersion: 2,
+      evidence: { storageMode: "raid", laptop: {} },
+    })).toThrow("storageMode");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      schemaVersion: 2,
+      evidence: {
+        storageMode: "unknown",
+        storageControllers: [],
+        usbControllers: [],
+        thunderboltControllers: [],
+        bluetooth: [],
+        inputControllers: [{
+          id: "input-0",
+          name: "I2C controller",
+          vendorId: "8086",
+          deviceId: "1234",
+          revisionId: "XYZ",
+        }],
+        laptop: {
+          batteryDetected: false,
+          i2cDetected: true,
+          ps2Detected: false,
+          intelSstDetected: false,
+          cameraDetected: false,
+          fingerprintDetected: false,
+          cardReaderDetected: false,
+        },
+      },
+    })).toThrow("Revision ID");
   });
 
   it("keeps normalized evidence while removing raw device paths", () => {

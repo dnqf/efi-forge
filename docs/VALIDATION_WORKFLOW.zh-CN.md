@@ -10,11 +10,13 @@ EFI Forge 把“规则正确”“EFI 结构正确”和“目标电脑实际可
 
 导入器执行以下检查：
 
-- `schemaVersion` 必须为 1；
+- `schemaVersion` 必须为 1 或 2；v1 保留基础身份，v2 可携带严格白名单化的控制器和笔记本证据；
 - 设备种类和枚举值必须有效；
 - CPU 数字字段必须为非负整数，核心和线程至少为 1；
 - PCI Vendor ID / Device ID 必须为空或四位十六进制；
-- Subsystem ID 必须为八位十六进制；
+- Subsystem ID 必须为八位十六进制，Revision ID 为两位、Class Code 为六位十六进制；
+- v2 存储模式只能是 `ahci`、`raid-vmd` 或 `unknown`，证据数组有数量上限；
+- 原始 PNP 实例路径、序列号和未知字段不会进入规范化输出；
 - 文件不得超过 1 MB；
 - 未在白名单中的 JSON 字段会被删除。
 

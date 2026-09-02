@@ -1,9 +1,10 @@
-import type { HardwareReport, PciDevice } from "../domain/types";
+import type { HardwareEvidence, HardwareReport, PciDevice } from "../domain/types";
 
 const reportKinds = ["desktop", "laptop"] as const;
 const firmwareKinds = ["uefi", "legacy"] as const;
 const cpuVendors = ["intel", "amd", "unknown"] as const;
 const identitySources = ["direct-pci", "parent-pci", "name-only"] as const;
+const storageModes = ["ahci", "raid-vmd", "unknown"] as const;
 
 type JsonObject = Record<string, unknown>;
 
@@ -98,6 +99,15 @@ function classCodeAt(value: unknown, path: string): string | undefined {
   return code;
 }
 
+function revisionIdAt(value: unknown, path: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const id = stringAt(value, path).toUpperCase();
+  if (!/^[0-9A-F]{2}$/.test(id)) {
+    throw new Error(`${path} 必须是两位十六进制 Revision ID。`);
+  }
+  return id;
+}
+
 function biosDateAt(value: unknown, path: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const date = stringAt(value, path);
@@ -134,7 +144,24 @@ function pciDevicesAt(value: unknown, path: string): PciDevice[] {
       vendorId: pciIdAt(device.vendorId, `${path}[${index}].vendorId`),
       deviceId: pciIdAt(device.deviceId, `${path}[${index}].deviceId`),
       subsystemId: subsystemIdAt(device.subsystemId, `${path}[${index}].subsystemId`),
+      subsystemVendorId: device.subsystemVendorId === undefined
+        ? undefined
+        : pciIdAt(device.subsystemVendorId, `${path}[${index}].subsystemVendorId`),
+      subsystemDeviceId: device.subsystemDeviceId === undefined
+        ? undefined
+        : pciIdAt(device.subsystemDeviceId, `${path}[${index}].subsystemDeviceId`),
+      revisionId: revisionIdAt(device.revisionId, `${path}[${index}].revisionId`),
       classCode: classCodeAt(device.classCode, `${path}[${index}].classCode`),
+      parentVendorId: device.parentVendorId === undefined
+        ? undefined
+        : pciIdAt(device.parentVendorId, `${path}[${index}].parentVendorId`),
+      parentDeviceId: device.parentDeviceId === undefined
+        ? undefined
+        : pciIdAt(device.parentDeviceId, `${path}[${index}].parentDeviceId`),
+      parentClassCode: classCodeAt(
+        device.parentClassCode,
+        `${path}[${index}].parentClassCode`,
+      ),
       identitySource:
         device.identitySource === undefined
           ? undefined
@@ -143,9 +170,41 @@ function pciDevicesAt(value: unknown, path: string): PciDevice[] {
   });
 }
 
+function hardwareEvidenceAt(value: unknown, path: string): HardwareEvidence {
+  const evidence = objectAt(value, path);
+  const laptop = objectAt(evidence.laptop, `${path}.laptop`);
+  const chipsetDevices = evidence.chipset === undefined
+    ? []
+    : pciDevicesAt([evidence.chipset], `${path}.chipset`);
+
+  return {
+    storageMode: enumAt(evidence.storageMode, storageModes, `${path}.storageMode`),
+    chipset: chipsetDevices[0],
+    storageControllers: pciDevicesAt(evidence.storageControllers, `${path}.storageControllers`),
+    usbControllers: pciDevicesAt(evidence.usbControllers, `${path}.usbControllers`),
+    thunderboltControllers: pciDevicesAt(
+      evidence.thunderboltControllers,
+      `${path}.thunderboltControllers`,
+    ),
+    bluetooth: pciDevicesAt(evidence.bluetooth, `${path}.bluetooth`),
+    inputControllers: pciDevicesAt(evidence.inputControllers, `${path}.inputControllers`),
+    laptop: {
+      batteryDetected: booleanAt(laptop.batteryDetected, `${path}.laptop.batteryDetected`),
+      i2cDetected: booleanAt(laptop.i2cDetected, `${path}.laptop.i2cDetected`),
+      ps2Detected: booleanAt(laptop.ps2Detected, `${path}.laptop.ps2Detected`),
+      intelSstDetected: booleanAt(laptop.intelSstDetected, `${path}.laptop.intelSstDetected`),
+      cameraDetected: booleanAt(laptop.cameraDetected, `${path}.laptop.cameraDetected`),
+      fingerprintDetected: booleanAt(laptop.fingerprintDetected, `${path}.laptop.fingerprintDetected`),
+      cardReaderDetected: booleanAt(laptop.cardReaderDetected, `${path}.laptop.cardReaderDetected`),
+    },
+  };
+}
+
 export function parseHardwareReport(value: unknown): HardwareReport {
   const root = objectAt(value, "硬件报告");
-  if (root.schemaVersion !== 1) throw new Error("只支持 schemaVersion 为 1 的硬件报告。");
+  if (root.schemaVersion !== 1 && root.schemaVersion !== 2) {
+    throw new Error("只支持 schemaVersion 为 1 或 2 的硬件报告。");
+  }
 
   const capturedAt = stringAt(root.capturedAt, "capturedAt", false, 64);
   const capturedTime = Date.parse(capturedAt);
@@ -162,7 +221,7 @@ export function parseHardwareReport(value: unknown): HardwareReport {
   if (threads < cores) throw new Error("CPU 线程数不能小于核心数。");
 
   return {
-    schemaVersion: 1,
+    schemaVersion: root.schemaVersion,
     capturedAt,
     system: {
       kind: enumAt(system.kind, reportKinds, "system.kind"),
@@ -192,6 +251,9 @@ export function parseHardwareReport(value: unknown): HardwareReport {
     network: pciDevicesAt(root.network, "network"),
     audio: pciDevicesAt(root.audio, "audio"),
     storage: pciDevicesAt(root.storage, "storage"),
+    evidence: root.schemaVersion === 2
+      ? hardwareEvidenceAt(root.evidence, "evidence")
+      : undefined,
   };
 }
 

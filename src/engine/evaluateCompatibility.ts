@@ -54,6 +54,27 @@ function matchesSelector(subject: Subject, selector: RuleSelector): boolean {
     return false;
   }
 
+  if (
+    selector.subsystemIds &&
+    !selector.subsystemIds.some(
+      (id) => normalize(id) === normalize(subject.device?.subsystemId ?? ""),
+    )
+  ) return false;
+
+  if (
+    selector.classCodes &&
+    !selector.classCodes.some(
+      (code) => normalize(code) === normalize(subject.device?.classCode ?? ""),
+    )
+  ) return false;
+
+  if (
+    selector.revisionIds &&
+    !selector.revisionIds.some(
+      (id) => normalize(id) === normalize(subject.device?.revisionId ?? ""),
+    )
+  ) return false;
+
   if (selector.nameIncludes && !includesAny(subject.name, selector.nameIncludes)) {
     return false;
   }
@@ -121,6 +142,9 @@ function unknownFinding(subject: Subject): CompatibilityFinding {
 function selectorSpecificity(selector: RuleSelector): number {
   return (
     (selector.deviceIds?.length ? 8 : 0) +
+    (selector.subsystemIds?.length ? 16 : 0) +
+    (selector.classCodes?.length ? 4 : 0) +
+    (selector.revisionIds?.length ? 2 : 0) +
     (selector.vendorIds?.length ? 4 : 0) +
     (selector.values?.length ? 2 : 0) +
     (selector.nameIncludes?.length ? 1 : 0)

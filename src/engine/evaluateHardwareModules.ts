@@ -18,7 +18,12 @@ function evidence(findings: CompatibilityFinding[]): string[] {
 }
 
 function isWireless(name: string): boolean {
-  return /wireless|wi-?fi|wlan|802\.11|bluetooth/i.test(name);
+  return /wireless|wi-?fi|wlan|802\.11/i.test(name);
+}
+
+function clueStatus(present: boolean, desktop: boolean): CompatibilityStatus {
+  if (desktop) return "supported";
+  return present ? "partial" : "unknown";
 }
 
 export function evaluateHardwareModules(
@@ -39,6 +44,10 @@ export function evaluateHardwareModules(
     (finding) => finding.status === "blocked" && !finding.ruleId.startsWith("system."),
   );
   const desktop = hardware.system.kind === "desktop";
+  const hardwareEvidence = hardware.evidence;
+  const bluetoothDevices = hardwareEvidence?.bluetooth ?? [];
+  const inputEvidence = hardwareEvidence?.inputControllers ?? [];
+  const laptopEvidence = hardwareEvidence?.laptop;
 
   return [
     {
@@ -84,7 +93,7 @@ export function evaluateHardwareModules(
     },
     {
       id: "wireless",
-      label: "无线与蓝牙",
+      label: "无线网络",
       status: aggregate(wirelessFindings),
       summary: wirelessFindings.length > 0
         ? "已检测无线设备，但仍需按芯片与目标系统选择机场卡方案。"
@@ -93,10 +102,22 @@ export function evaluateHardwareModules(
       choices: [],
     },
     {
+      id: "bluetooth",
+      label: "蓝牙",
+      status: bluetoothDevices.length > 0 ? "partial" : "unknown",
+      summary: bluetoothDevices.length > 0
+        ? "已取得独立蓝牙控制器线索；仍需按 USB 父控制器、芯片和系统版本核对。"
+        : "当前报告没有独立蓝牙控制器身份，不阻止继续。",
+      evidence: bluetoothDevices.map((device) => `${device.name} · ${device.vendorId || "无 PCI 父身份"}:${device.deviceId || "----"}`),
+      choices: [],
+    },
+    {
       id: "audio",
       label: "音频",
       status: aggregate(byCategory("audio")),
-      summary: "驱动与 layout-id 分开处理，layout-id 保留安装后校准。",
+      summary: laptopEvidence?.intelSstDetected
+        ? "检测到 Intel SST 线索；内置麦克风可能不能按普通 AppleALC 路径工作，layout-id 仍需逐项校准。"
+        : "驱动与 layout-id 分开处理，模拟、HDMI/DP 与麦克风分别保留安装后校准。",
       evidence: evidence(byCategory("audio")),
       choices: [],
     },
@@ -104,7 +125,9 @@ export function evaluateHardwareModules(
       id: "storage",
       label: "存储",
       status: aggregate(byCategory("storage")),
-      summary: "危险控制器或型号降低可信度，但安装目标仍由用户选择。",
+      summary: hardwareEvidence?.storageMode === "raid-vmd"
+        ? "检测到 VMD/RST/RAID 控制器线索；安装前需切换或验证 AHCI 路径，安装目标仍由用户选择。"
+        : "危险控制器或型号降低可信度，但安装目标仍由用户选择。",
       evidence: evidence(byCategory("storage")),
       choices: byCategory("storage").some((finding) => finding.status === "blocked")
         ? [
@@ -128,7 +151,9 @@ export function evaluateHardwareModules(
       label: "USB 端口",
       status: "partial",
       summary: "静态扫描不能生成可靠端口映射，可在组装时导入专属 UTBMap。",
-      evidence: ["报告未包含逐端口 ACPI 拓扑"],
+      evidence: hardwareEvidence?.usbControllers.length
+        ? hardwareEvidence.usbControllers.map((device) => `${device.name} · ${device.vendorId}:${device.deviceId}`)
+        : ["报告未包含 USB 控制器或逐端口 ACPI 拓扑"],
       choices: [
         {
           id: "map-after-install",
@@ -145,7 +170,27 @@ export function evaluateHardwareModules(
       ],
     },
     ...(["laptop-input", "battery", "backlight", "sleep"] as const).map(
-      (id): HardwareModuleAssessment => ({
+      (id): HardwareModuleAssessment => {
+        const hasClue = id === "laptop-input"
+          ? inputEvidence.length > 0 || Boolean(laptopEvidence?.i2cDetected || laptopEvidence?.ps2Detected)
+          : id === "battery"
+            ? Boolean(laptopEvidence?.batteryDetected)
+            : id === "backlight"
+              ? hasSupportedGpu
+              : Boolean(
+                laptopEvidence?.intelSstDetected
+                || hardwareEvidence?.thunderboltControllers.length,
+              );
+        const clueEvidence = id === "laptop-input" && inputEvidence.length > 0
+          ? inputEvidence.map((device) => device.name)
+          : id === "battery" && laptopEvidence?.batteryDetected
+            ? ["Windows 电池设备存在"]
+            : id === "backlight" && hasSupportedGpu
+              ? ["存在已识别的图形设备；未取得面板 ACPI"]
+              : id === "sleep" && hasClue
+                ? ["Intel SST 或 Thunderbolt/USB4 线索需纳入睡眠排查"]
+                : ["缺少专属 ACPI/控制器证据"];
+        return {
         id,
         label: {
           "laptop-input": "笔记本输入",
@@ -153,13 +198,50 @@ export function evaluateHardwareModules(
           backlight: "背光",
           sleep: "睡眠",
         }[id],
-        status: desktop ? "supported" : "unknown",
+        status: clueStatus(hasClue, desktop),
         summary: desktop
           ? "当前为台式机，该笔记本专属模块不参与自动配置。"
-          : "当前扫描不足以安全生成该笔记本专属模块，允许导入用户方案。",
-        evidence: [desktop ? "system.kind=desktop" : "缺少专属 ACPI/控制器证据"],
+          : hasClue
+            ? "Windows 扫描取得了设备线索，但仍不足以自动生成 ACPI/Kext；允许继续或导入专属方案。"
+            : "当前扫描不足以安全生成该笔记本专属模块，允许导入用户方案。",
+        evidence: desktop ? ["system.kind=desktop"] : clueEvidence,
         choices: [],
-      }),
+        };
+      },
+    ),
+    {
+      id: "thunderbolt",
+      label: "Thunderbolt / USB4",
+      status: hardwareEvidence?.thunderboltControllers.length ? "partial" : "unknown",
+      summary: hardwareEvidence?.thunderboltControllers.length
+        ? "已检测控制器线索；热插拔、睡眠和安全级别仍需实机验证。"
+        : "未取得 Thunderbolt/USB4 控制器线索，不阻止继续。",
+      evidence: hardwareEvidence?.thunderboltControllers.map((device) => device.name) ?? [],
+      choices: [],
+    },
+    ...(["camera", "fingerprint", "card-reader"] as const).map(
+      (id): HardwareModuleAssessment => {
+        const detected = id === "camera"
+          ? laptopEvidence?.cameraDetected
+          : id === "fingerprint"
+            ? laptopEvidence?.fingerprintDetected
+            : laptopEvidence?.cardReaderDetected;
+        const labels = { camera: "摄像头", fingerprint: "指纹", "card-reader": "读卡器" };
+        return {
+          id,
+          label: labels[id],
+          status: clueStatus(Boolean(detected), desktop),
+          summary: desktop
+            ? "当前为台式机，该笔记本附加模块不参与自动配置。"
+            : detected
+              ? id === "fingerprint"
+                ? "检测到指纹设备线索；macOS 通常不支持 PC 指纹模块，不会自动配置。"
+                : "检测到设备线索；具体 USB/PCI 身份与 macOS 行为仍需实机核对。"
+              : "未取得设备线索，不阻止继续。",
+          evidence: detected ? ["Windows PnP 设备线索"] : [],
+          choices: [],
+        };
+      },
     ),
   ];
 }

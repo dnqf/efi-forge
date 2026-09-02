@@ -21,12 +21,37 @@ export interface PciDevice {
   vendorId: string;
   deviceId: string;
   subsystemId?: string;
+  subsystemVendorId?: string;
+  subsystemDeviceId?: string;
+  revisionId?: string;
   classCode?: string;
+  parentVendorId?: string;
+  parentDeviceId?: string;
+  parentClassCode?: string;
   identitySource?: "direct-pci" | "parent-pci" | "name-only";
 }
 
+export interface HardwareEvidence {
+  storageMode: "ahci" | "raid-vmd" | "unknown";
+  chipset?: PciDevice;
+  storageControllers: PciDevice[];
+  usbControllers: PciDevice[];
+  thunderboltControllers: PciDevice[];
+  bluetooth: PciDevice[];
+  inputControllers: PciDevice[];
+  laptop: {
+    batteryDetected: boolean;
+    i2cDetected: boolean;
+    ps2Detected: boolean;
+    intelSstDetected: boolean;
+    cameraDetected: boolean;
+    fingerprintDetected: boolean;
+    cardReaderDetected: boolean;
+  };
+}
+
 export interface HardwareReport {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   capturedAt: string;
   system: {
     kind: "desktop" | "laptop";
@@ -57,12 +82,16 @@ export interface HardwareReport {
   network: PciDevice[];
   audio: PciDevice[];
   storage: PciDevice[];
+  evidence?: HardwareEvidence;
 }
 
 export interface RuleSelector {
   values?: string[];
   vendorIds?: string[];
   deviceIds?: string[];
+  subsystemIds?: string[];
+  classCodes?: string[];
+  revisionIds?: string[];
   nameIncludes?: string[];
 }
 
@@ -71,6 +100,9 @@ export type RuleEvidence =
   | "cpu-generation"
   | "pci-vendor-id"
   | "pci-device-id"
+  | "pci-subsystem-id"
+  | "pci-class-code"
+  | "pci-revision-id"
   | "device-name";
 
 export type RuleMaturity = "reviewed" | "experimental" | "deprecated";
@@ -118,13 +150,18 @@ export type HardwareModuleId =
   | "graphics"
   | "ethernet"
   | "wireless"
+  | "bluetooth"
   | "audio"
   | "storage"
   | "usb"
   | "laptop-input"
   | "battery"
   | "backlight"
-  | "sleep";
+  | "sleep"
+  | "thunderbolt"
+  | "camera"
+  | "fingerprint"
+  | "card-reader";
 
 export interface ModuleChoice {
   id: string;
@@ -272,6 +309,9 @@ export interface CommunityEfiProfile {
     manufacturerIncludes: string[];
     modelIncludes: string[];
     cpuGenerations: string[];
+    systemSkus: string[];
+    boardModels: string[];
+    chipsets: string[];
     biosVersions?: string[];
     requiredPciIds?: string[];
     requiredAcpiFeatures: string[];
@@ -280,6 +320,10 @@ export interface CommunityEfiProfile {
   openCoreVersion: string;
   lastVerified: string;
   knownIssues: string[];
+  verification: {
+    stage: VerificationStage;
+    configSha256: string;
+  };
   audit: {
     identitySanitized: boolean;
     unknownExecutablesRejected: boolean;

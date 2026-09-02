@@ -53,6 +53,8 @@ import { downloadJson } from "./utils/downloadJson";
 import { assessThinkPad } from "./thinkpad/assessThinkPad";
 import { canBuildFromHardwareSource } from "./workflow/hardwareSourcePolicy";
 import { assessBuildReadiness } from "./workflow/buildReadiness";
+import { summarizeHardwareEvidence } from "./workflow/hardwareEvidenceSummary";
+import { classifyMachineRoute } from "./workflow/classifyMachineRoute";
 import {
   canVisitWorkflowStep,
   summarizeCompatibility,
@@ -155,7 +157,7 @@ const optionalVerificationChecks: { key: keyof VerificationObservations; label: 
   { key: "sleep", label: "睡眠/唤醒" },
 ];
 
-const appVersion = "0.1.12";
+const appVersion = "0.1.13";
 
 function deviceIdentityCopy(device: HardwareReport["gpus"][number] | undefined): string {
   if (!device) return "----:----";
@@ -382,6 +384,11 @@ function App() {
     }),
     [hardware, report, buildPlan, hasFatalManifestFailure],
   );
+  const hardwareEvidenceSummary = useMemo(
+    () => summarizeHardwareEvidence(hardware),
+    [hardware],
+  );
+  const machineRoute = useMemo(() => classifyMachineRoute(hardware), [hardware]);
   const workflowLocked = scanState === "scanning" || assemblyBusy !== null || copyBusy;
 
   function workflowStepAvailable(step: WorkflowStep): boolean {
@@ -919,7 +926,7 @@ function App() {
             EF
           </span>
           <div>
-            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.12</p>
+            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.13</p>
             <h1>EFI Forge</h1>
           </div>
         </div>
@@ -1249,6 +1256,43 @@ function App() {
                 </div>
               )}
             </section>
+          )}
+
+          {hardwareInputReady && (
+            <details className="hardware-evidence-ledger report-disclosure">
+              <summary>
+                <div>
+                  <p className="eyebrow">HARDWARE EVIDENCE 2.0</p>
+                  <h3>控制器与笔记本证据账本</h3>
+                  <p>这些是 Windows 只读扫描线索，不是 macOS 兼容或可启动证明。</p>
+                </div>
+                <span>{hardwareEvidenceSummary.reportVersion}</span>
+              </summary>
+              <div className="hardware-evidence-grid">
+                <article><span>芯片组</span><strong>{hardwareEvidenceSummary.chipset}</strong></article>
+                <article><span>存储模式</span><strong>{hardwareEvidenceSummary.storageMode}</strong></article>
+                <article><span>控制器</span><strong>{hardwareEvidenceSummary.controllerCount} 个证据项</strong></article>
+                <article>
+                  <span>无线 / 蓝牙</span>
+                  <strong>{hardwareEvidenceSummary.wirelessCount} / {hardwareEvidenceSummary.bluetoothCount}</strong>
+                </article>
+              </div>
+              <div className="hardware-evidence-footnote">
+                <div>
+                  <span>整机策略</span>
+                  <strong>{machineRoute.label} · {machineRoute.guidance}</strong>
+                </div>
+                <div>
+                  <span>笔记本线索</span>
+                  <strong>{hardwareEvidenceSummary.laptopClues.join(" · ") || "尚未取得"}</strong>
+                </div>
+                <div>
+                  <span>仍可补充</span>
+                  <strong>{hardwareEvidenceSummary.gaps.join(" · ") || "主要控制器身份已取得"}</strong>
+                </div>
+                <small>证据缺失不会阻止继续；EFI 结构、组件完整性和数据安全门仍不可绕过。</small>
+              </div>
+            </details>
           )}
 
           <section className={`mobile-next-action ${previewReport ? "is-preview" : ""}`} aria-label="当前流程下一步">
@@ -2329,7 +2373,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.12-dev</span>
+        <span>EFI Forge v0.1.13-dev</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

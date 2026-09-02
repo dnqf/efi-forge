@@ -6,7 +6,7 @@ EFI Forge 默认不提供账号、云同步、遥测或后台上传。硬件分�
 
 用户点击“扫描这台电脑”后，Windows 桌面版会只读查询系统类型、固件模式、CPU、主板/BIOS，以及显卡、网络、音频和存储设备的型号与 PCI 身份。扫描用于生成当前会话中的硬件报告，不会读取 Windows 用户名、网络密码、浏览器数据、产品密钥或磁盘唯一序列号。
 
-导出的脱敏硬件报告可能包含：整机厂商与型号、ThinkPad 四位 Machine Type、CPU 名称/代际/核心数、主板型号、BIOS 版本和日期、设备名称、PCI Vendor/Device/Subsystem ID、设备类别以及采集时间。导出前不会加入 SMBIOS 序列号、MLB、ROM、SystemUUID、Windows 用户路径或网络凭据。报告只有在用户明确点击导出时才会写入文件。
+导出的脱敏硬件报告可能包含：整机厂商与型号、ThinkPad 四位 Machine Type、CPU 名称/代际/核心数、主板型号、BIOS 版本和日期、设备名称、PCI Vendor/Device/Subsystem/Revision ID、可选父 PCI 身份、设备类别、存储模式线索、控制器列表、笔记本设备存在性以及采集时间。原始 PNP 实例路径只在扫描进程内用于标准化设备身份，不写入报告；Windows v2 扫描优先单独列出控制器，避免为每个子设备反复追溯路径。导出前不会加入 SMBIOS 序列号、MLB、ROM、SystemUUID、Windows 用户路径或网络凭据。报告只有在用户明确点击导出时才会写入文件。
 
 ## EFI、ACPI 与用户组件
 

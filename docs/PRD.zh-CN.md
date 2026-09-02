@@ -16,15 +16,17 @@ EFI Forge 是面向中文 OpenCore 初学者和维护者的 Windows 桌面候选
 4. 不因误选路径覆盖现有 EFI 或其他用户文件。
 5. 将 Picker、Recovery、安装和安装后结果以脱敏、精确绑定的证据返回工具。
 
-## 3. v0.1.12 开发范围
+## 3. v0.1.13 开发范围
 
 ### 已实现路径
 
-- Windows 10/11 x64 只读硬件扫描与脱敏 JSON 导入/导出。
+- Windows 10/11 x64 只读硬件扫描与脱敏 JSON 导入/导出；schema v2 增加控制器、父 PCI 与笔记本 PnP 线索，旧 v1 报告继续兼容。
 - Ventura 13、Sonoma 14、Sequoia 15 规则；Tahoe 26 只开放手动研究路径。
 - 已审核 AMD Zen B450/B550 与 Intel Coffee Lake/Comet Lake 台式机候选生成。
 - 新旧 Intel、AMD APU、ThinkPad 和 Legacy BIOS 手动/研究路由，不伪装成自动配置。
-- NVIDIA、AMD GPU、网卡、音频和高风险 NVMe 的可追踪规则。
+- NVIDIA、AMD GPU（含 RX 550 Lexa 区分）、网卡、独立蓝牙、音频和高风险 NVMe 的可追踪规则。
+- VMD/RST/RAID、AHCI、NVMe、USB xHCI、Thunderbolt/USB4、Intel SST、I2C/PS2、电池、摄像头、指纹和读卡器证据账本；这些线索不会自动升级为“已支持”。
+- DIY、OEM 台式机、ThinkPad、普通/AMD 笔记本、迷你机、工作站和旧平台分路由说明，不扩大未审核自动模板。
 - 固定版本组件、下载上限、SHA-256、安全解压和同版本 `ocvalidate`。
 - 完整 EFI 只读检查，以及 Kext、AML、UEFI Driver 显式选择和新目录融合。
 - 只向空目录复制 `EFI`；复制前后重新检查，不覆盖、不格式化。
@@ -45,7 +47,7 @@ EFI Forge 是面向中文 OpenCore 初学者和维护者的 Windows 桌面候选
 - EFI 结构、锁定组件完整性或 `ocvalidate` 失败：停止当前输出或复制。
 - 目标非空、路径互包含、符号链接/重解析点或可能破坏数据：停止。
 - 不执行用户 EFI 或社区候选中的程序；只执行锁定来源和哈希的官方 OpenCore 工具。
-- 不导出用户名、磁盘序列号、SMBIOS 序列号、MAC 地址或网络凭据。
+- 不导出用户名、磁盘序列号、SMBIOS 序列号、MAC 地址、原始 PNP 实例路径或网络凭据。
 
 ## 5. 当前用户流程
 
