@@ -189,6 +189,6 @@ export function evaluateCompatibility(
     modules,
     feasibility,
     canContinue: true,
-    recommended: status !== "blocked",
+    recommended: status !== "blocked" && targetMacOS !== "26",
   };
 }

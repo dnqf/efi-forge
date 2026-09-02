@@ -230,7 +230,7 @@ where
         for item in &session.items {
             let action = decisions
                 .get(&item.public.id)
-                .expect("validated decisions include every item");
+                .ok_or_else(|| "组件选择结果不完整，请重新扫描后再试。".to_string())?;
             revalidate_scan_item(item)?;
             let target = safe_staging_target(&staging, &item.public.target_path)?;
             let mut final_target = None;
@@ -325,6 +325,11 @@ where
             "替换或启用用户组件不代表项目推荐，版本兼容性仍需独立 U 盘验证。".into(),
             "静态检查和 ocvalidate 不能代替 OpenCore Picker、Recovery 或安装实测。".into(),
         ];
+        for warning in &validation.warnings {
+            if !warnings.contains(warning) {
+                warnings.push(warning.clone());
+            }
+        }
         warnings.insert(
             0,
             if config_modified {
@@ -1554,6 +1559,11 @@ mod tests {
             .and_then(plist::Value::as_dictionary_mut)
             .unwrap()
             .insert("Add".into(), plist::Value::Array(Vec::new()));
+        config
+            .get_mut("Misc")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert("Tools".into(), plist::Value::Array(Vec::new()));
         config
             .get_mut("UEFI")
             .and_then(plist::Value::as_dictionary_mut)

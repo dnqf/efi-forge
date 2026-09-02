@@ -40,7 +40,7 @@ import {
   type ComponentAction,
   type ComponentMergeResult,
   type ComponentScanResult,
-  type InstallCopyResult,
+  type SafeCopyResult,
   type ScaffoldResult,
   type UsbMapSelection,
 } from "./native/efiBuilder";
@@ -52,6 +52,7 @@ import {
 import { downloadJson } from "./utils/downloadJson";
 import { assessThinkPad } from "./thinkpad/assessThinkPad";
 import { canBuildFromHardwareSource } from "./workflow/hardwareSourcePolicy";
+import { assessBuildReadiness } from "./workflow/buildReadiness";
 import {
   canVisitWorkflowStep,
   summarizeCompatibility,
@@ -91,6 +92,7 @@ const macOSNames: Record<MacOSVersion, string> = {
   "13": "Ventura 13",
   "14": "Sonoma 14",
   "15": "Sequoia 15",
+  "26": "Tahoe 26（手动研究）",
 };
 
 const sourceCopy: Record<HardwareReportSource, string> = {
@@ -121,6 +123,13 @@ const componentActionCopy: Record<ComponentAction, string> = {
   "preserve-inactive": "隔离保留两份",
   skip: "不加入",
 };
+
+const buildRouteStatusCopy = {
+  ready: "可生成候选",
+  available: "可随时选择",
+  manual: "需要手动配置",
+  blocked: "完整性阻断",
+} as const;
 
 const thinkPadTierCopy = {
   "guided-candidate": "有同系列候选",
@@ -203,8 +212,8 @@ const guideSteps = [
   },
   {
     icon: "usb" as const,
-    title: "复制到独立测试目录",
-    text: "只复制 EFI 到你选择的空目录，再用独立 U 盘测试 OpenCore 和 Recovery；工具不会制作完整 macOS 安装盘。",
+    title: "复制到独立测试介质",
+    text: "普通空文件夹只能导出检查；要启动时，请选择已挂载的独立 U 盘 FAT32 EFI 分区根目录。工具不会分区或制作完整 macOS 安装盘。",
   },
 ];
 
@@ -260,8 +269,8 @@ function App() {
   const [componentActions, setComponentActions] = useState<Record<string, ComponentAction>>({});
   const [componentMergeResult, setComponentMergeResult] = useState<ComponentMergeResult | null>(null);
   const [usbMap, setUsbMap] = useState<UsbMapSelection | null>(null);
-  const [installBusy, setInstallBusy] = useState(false);
-  const [installResult, setInstallResult] = useState<InstallCopyResult | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyResult, setCopyResult] = useState<SafeCopyResult | null>(null);
   const [discoveryCatalog, setDiscoveryCatalog] = useState<CommunityDiscoveryCatalog | null>(null);
   const [verificationStage, setVerificationStage] = useState<CompletedVerificationStage>("boot-tested");
   const [verificationResult, setVerificationResult] = useState<"passed" | "failed">("passed");
@@ -352,7 +361,13 @@ function App() {
     () => summarizeCompatibility(report.findings),
     [report.findings],
   );
-  const workflowLocked = scanState === "scanning" || assemblyBusy !== null || installBusy;
+  const buildReadiness = useMemo(
+    () => assessBuildReadiness(hardware, report, buildPlan, {
+      softwareIntegrityFailure: hasFatalManifestFailure,
+    }),
+    [hardware, report, buildPlan, hasFatalManifestFailure],
+  );
+  const workflowLocked = scanState === "scanning" || assemblyBusy !== null || copyBusy;
 
   function workflowStepAvailable(step: WorkflowStep): boolean {
     return canVisitWorkflowStep(step, {
@@ -369,10 +384,12 @@ function App() {
       return hardwareInputReady ? `${compatibilityDigest.attention} 项需要关注` : "等待本机报告";
     }
     if (step === 3) {
-      if (scaffoldResult?.readyForInstall) return "候选已校验";
-      return hardwareInputReady ? "可进入" : "等待报告";
+      if (scaffoldResult?.readyForCopy) return "候选已校验";
+      if (hasFatalManifestFailure) return "结构或完整性失败";
+      if (!hardwareInputReady) return "等待报告";
+      return buildReadiness.mode === "auto-candidate" ? "候选路径可用" : "手动路径可用";
     }
-    return efiValidation?.valid ? "可以安全复制" : "等待完整 EFI";
+    return efiValidation?.valid ? "可进入受控复制" : "等待完整 EFI";
   }
 
   function navigateToWorkflowStep(step: WorkflowStep) {
@@ -393,7 +410,7 @@ function App() {
     setComponentScan(null);
     setComponentActions({});
     setComponentMergeResult(null);
-    setInstallResult(null);
+    setCopyResult(null);
     setVerificationReview(null);
   }
 
@@ -406,15 +423,16 @@ function App() {
 
     try {
       if (hasNativeRuntime) {
-        const nativeHardware = await scanNativeHardware();
+        const nativeHardware = parseHardwareReport(await scanNativeHardware());
+        if (workflowEpoch !== workflowEpochRef.current) return;
         setHardware(nativeHardware);
         setScanSource("native");
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 850));
+        if (workflowEpoch !== workflowEpochRef.current) return;
         setHardware(sampleHardware);
         setScanSource("demo");
       }
-      if (workflowEpoch !== workflowEpochRef.current) return;
       setUsbMap(null);
       setAmdSetupVirtualMap(undefined);
       setIntelClockMode(undefined);
@@ -537,10 +555,10 @@ function App() {
       const result = await buildEfiScaffold(buildManifest, usbMap?.sourcePath);
       if (workflowEpoch !== workflowEpochRef.current) return;
       if (result) {
-        setInstallResult(null);
+        setCopyResult(null);
         setVerificationReview(null);
         setScaffoldResult(result);
-        if (result.readyForInstall) {
+        if (result.readyForCopy) {
           setEfiValidation({
             rootPath: result.outputPath,
             valid: true,
@@ -550,7 +568,7 @@ function App() {
             configSha256: result.configSha256,
           });
           setActiveEfiSource("generated");
-          setReportNotice(`候选 EFI 已一键生成并通过同版本 ocvalidate：${result.outputPath}`);
+          setReportNotice(`候选 EFI 已生成并通过同版本 ocvalidate：${result.outputPath}`);
         } else {
           setEfiValidation(null);
           setActiveEfiSource(null);
@@ -558,9 +576,10 @@ function App() {
         }
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`暂存包生成失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setAssemblyBusy(null);
+      if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
   }
 
@@ -580,6 +599,7 @@ function App() {
         setReportNotice(`已选择 ${result.bundleName}；构建时会安全复制，不会修改源文件。`);
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`USB Map 拒绝导入：${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -603,9 +623,10 @@ function App() {
         );
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`DSDT 分析已停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setAssemblyBusy(null);
+      if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
   }
 
@@ -634,7 +655,7 @@ function App() {
         setEfiValidation(result);
         setActiveEfiSource("custom");
         setMergeResult(null);
-        setInstallResult(null);
+        setCopyResult(null);
         setReportNotice(
           result.valid
             ? `EFI 仅结构检查通过（未执行 ocvalidate）：${result.rootPath}`
@@ -642,14 +663,15 @@ function App() {
         );
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`EFI 校验失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setAssemblyBusy(null);
+      if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
   }
 
   async function mergeGeneratedAndCustomEfi() {
-    if (!scaffoldResult?.readyForInstall || !customEfiValidation?.valid || !hasNativeRuntime) {
+    if (!scaffoldResult?.readyForCopy || !customEfiValidation?.valid || !hasNativeRuntime) {
       setAssemblyError("请先生成完整候选 EFI，并选择一份结构检查通过的用户 EFI。");
       return;
     }
@@ -674,20 +696,21 @@ function App() {
           configSha256: result.configSha256,
         });
         setActiveEfiSource("merged");
-        setInstallResult(null);
+        setCopyResult(null);
         setReportNotice(`融合 EFI 副本已生成并通过结构检查：${result.outputPath}`);
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`EFI 融合已停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setAssemblyBusy(null);
+      if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
   }
 
   function restoreGeneratedCandidate() {
-    setInstallResult(null);
+    setCopyResult(null);
     setVerificationReview(null);
-    if (!scaffoldResult?.readyForInstall) {
+    if (!scaffoldResult?.readyForCopy) {
       setEfiValidation(null);
       setActiveEfiSource(null);
       return;
@@ -704,7 +727,7 @@ function App() {
   }
 
   async function scanUserComponents(selectionMode: "folder" | "files") {
-    if (!scaffoldResult?.readyForInstall || !hasNativeRuntime) {
+    if (!scaffoldResult?.readyForCopy || !hasNativeRuntime) {
       setAssemblyError("请先生成通过 ocvalidate 的项目候选 EFI，再导入单独组件进行比较。");
       return;
     }
@@ -722,9 +745,10 @@ function App() {
         setReportNotice(`已只读扫描 ${result.items.length} 个用户组件；请逐项选择处理方式。`);
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`组件导入已停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setAssemblyBusy(null);
+      if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
   }
 
@@ -738,7 +762,7 @@ function App() {
   }
 
   async function buildComponentMerge() {
-    if (!componentScan || !scaffoldResult?.readyForInstall || !hasNativeRuntime) {
+    if (!componentScan || !scaffoldResult?.readyForCopy || !hasNativeRuntime) {
       setAssemblyError("组件扫描会话或项目候选 EFI 尚未就绪。");
       return;
     }
@@ -765,17 +789,18 @@ function App() {
           configSha256: result.configAfterSha256,
         });
         setActiveEfiSource("component-merged");
-        setInstallResult(null);
+        setCopyResult(null);
         setReportNotice(`组件融合副本已生成：${result.outputPath}`);
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`组件融合已停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setAssemblyBusy(null);
+      if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
     }
   }
 
-  function continueToInstallMedia() {
+  function continueToCopyTest() {
     if (!efiValidation?.valid) {
       setAssemblyError("只有结构完整的 EFI 才能进入复制与测试步骤。兼容性警告不会阻止这里，但结构损坏会停止。");
       return;
@@ -813,9 +838,11 @@ function App() {
     event.target.value = "";
     if (!file || !verificationBinding) return;
     setAssemblyError(null);
+    const workflowEpoch = workflowEpochRef.current;
     try {
       if (file.size > 64 * 1024) throw new Error("验证证据不能超过 64 KB。");
       const evidence = parseVerificationEvidence(JSON.parse(await file.text()));
+      if (workflowEpoch !== workflowEpochRef.current) return;
       const mismatches = verifyEvidenceBinding(evidence, verificationBinding);
       if (mismatches.length > 0) {
         setVerificationReview(`证据未绑定当前 EFI：${mismatches.join("、")}。不会提升验证阶段。`);
@@ -825,24 +852,25 @@ function App() {
         setVerificationReview(`证据与当前 EFI 精确绑定，但记录结果为失败：${verificationStageCopy[evidence.stage]}。`);
       }
     } catch (error) {
+      if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`验证证据导入失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   async function copyValidatedEfi() {
     if (!efiValidation?.valid || !hasNativeRuntime) return;
-    setInstallBusy(true);
+    setCopyBusy(true);
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
     try {
       const result = await copyEfiToEmptyTarget(efiValidation.rootPath);
       if (workflowEpoch !== workflowEpochRef.current) return;
-      if (result) setInstallResult(result);
+      if (result) setCopyResult(result);
     } catch (error) {
       if (workflowEpoch !== workflowEpochRef.current) return;
       setAssemblyError(`复制已停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setInstallBusy(false);
+      if (workflowEpoch === workflowEpochRef.current) setCopyBusy(false);
     }
   }
 
@@ -854,7 +882,7 @@ function App() {
             EF
           </span>
           <div>
-            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 01</p>
+            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.11</p>
             <h1>EFI Forge</h1>
           </div>
         </div>
@@ -1038,7 +1066,7 @@ function App() {
                 <span>当前报告来源</span>
                 <strong>{sourceCopy[scanSource]}</strong>
               </div>
-              <p>目标：macOS {macOSNames[targetMacOS]} · 规则覆盖 {report.coverage}%</p>
+              <p>目标：macOS {macOSNames[targetMacOS]} · 规则识别度 {report.coverage}%（不是成功率）</p>
               <div className="report-actions">
                 <button type="button" onClick={() => reportInputRef.current?.click()} disabled={scanState === "scanning"}>换一份报告</button>
                 <button type="button" onClick={exportReport} disabled={previewReport}>
@@ -1057,7 +1085,7 @@ function App() {
 
           {scanError && (
             <div className="scan-error" role="alert">
-              <strong>扫描没有完成</strong>
+              <strong>当前操作未完成</strong>
               <span>{scanError}</span>
             </div>
           )}
@@ -1076,6 +1104,12 @@ function App() {
               <span>检测到可能不兼容或信息不足的硬件。工具会保留警告并降低可信度，但不会替你锁死生成权限。</span>
             </div>
           )}
+          {targetMacOS === "26" && hardwareInputReady && (
+            <div className="experimental-warning" role="status">
+              <strong>Tahoe 26 当前只开放手动研究路径</strong>
+              <span>不会自动生成 config.plist。模拟音频已失去 AppleHDA 默认路径，WhateverGreen、无线、SMBIOS 与系统更新设置也需要逐项复核。</span>
+            </div>
+          )}
 
           {hardwareInputReady && (
             <section className="compatibility-digest" aria-labelledby="compatibility-digest-title">
@@ -1088,7 +1122,7 @@ function App() {
                       : "当前检查项没有发现需要人工处理的风险"}
                   </h3>
                 </div>
-                <span>{report.coverage}% 规则覆盖</span>
+                <span>{report.coverage}% 规则识别度</span>
               </header>
               <div className="compatibility-digest-stats">
                 <div><strong>{compatibilityDigest.supported}</strong><span>已有规则</span></div>
@@ -1109,14 +1143,84 @@ function App() {
             </section>
           )}
 
+          {hardwareInputReady && (
+            <section className="build-readiness-panel" aria-labelledby="build-readiness-title">
+              <header>
+                <div>
+                  <p className="eyebrow">BUILD ROUTES / USER CONTROL</p>
+                  <h3 id="build-readiness-title">{buildReadiness.headline}</h3>
+                  <p>{buildReadiness.notice}</p>
+                </div>
+                <span className={`readiness-mode mode-${buildReadiness.mode} ${buildReadiness.canContinue ? "" : "is-blocked"}`}>
+                  {!buildReadiness.canContinue
+                    ? "结构 / 完整性阻断"
+                    : buildReadiness.mode === "auto-candidate"
+                      ? "自动候选可用"
+                      : "手动路径可用"}
+                </span>
+              </header>
+
+              {buildReadiness.blockingReason && (
+                <div className="readiness-blocker" role="alert">{buildReadiness.blockingReason}</div>
+              )}
+
+              <div className="build-route-grid">
+                {buildReadiness.routes.map((route, index) => (
+                  <article key={route.id} className={`build-route route-${route.status}`}>
+                    <div className="build-route-heading">
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <em>{buildRouteStatusCopy[route.status]}</em>
+                    </div>
+                    <strong>{route.title}</strong>
+                    <p>{route.summary}</p>
+                    <small>{route.nextAction}</small>
+                  </article>
+                ))}
+              </div>
+
+              {buildReadiness.evidenceGaps.length > 0 ? (
+                <details className="evidence-gap-list">
+                  <summary>
+                    <span>可补充的硬件证据</span>
+                    <strong>{buildReadiness.evidenceGaps.length} 项 · 不阻止继续</strong>
+                  </summary>
+                  <div>
+                    {buildReadiness.evidenceGaps.map((gap) => (
+                      <article key={gap.id} className={`gap-${gap.priority}`}>
+                        <span>{gap.priority === "important" ? "优先补充" : "有条件再补"}</span>
+                        <strong>{gap.label}</strong>
+                        <p>{gap.detail}</p>
+                        <small>{gap.nextAction}</small>
+                      </article>
+                    ))}
+                  </div>
+                </details>
+              ) : (
+                <div className="evidence-complete-note">
+                  已取得当前规则所需的主要硬件身份；后续仍以 EFI 校验和真机启动记录为准。
+                </div>
+              )}
+            </section>
+          )}
+
           <section className={`mobile-next-action ${previewReport ? "is-preview" : ""}`} aria-label="当前流程下一步">
             <div>
               <span>NEXT ACTION</span>
-              <strong>{previewReport ? "先取得这台电脑的报告" : "硬件报告已就绪"}</strong>
+              <strong>
+                {previewReport
+                  ? "先取得这台电脑的报告"
+                  : !buildReadiness.canContinue
+                    ? "软件完整性检查未通过"
+                    : "硬件报告已就绪"}
+              </strong>
               <small>
                 {previewReport
                   ? "扫描本机或导入脱敏报告后，才会开放对应 EFI 的生成入口。"
-                  : "检查上方警告后，可继续进入 EFI 组装；硬件警告不会阻止你。"}
+                  : !buildReadiness.canContinue
+                    ? buildReadiness.blockingReason
+                  : buildReadiness.mode === "auto-candidate"
+                    ? "检查上方警告后，可生成项目候选或改用自己的 EFI。"
+                    : "没有自动模板也可继续：生成官方组件暂存包，或使用自己的 EFI。"}
               </small>
             </div>
             {!previewReport && (
@@ -1350,11 +1454,11 @@ function App() {
                 <small>目标：macOS {macOSNames[targetMacOS]}</small>
               </div>
             </div>
-            <div className="coverage-meter" aria-label={`规则覆盖率 ${report.coverage}%`}>
+            <div className="coverage-meter" aria-label={`规则识别度 ${report.coverage}%，不是安装成功率`}>
               <span style={{ width: `${report.coverage}%` }} />
             </div>
             <div className="coverage-copy">
-              <span>规则覆盖率</span>
+              <span>规则识别度 · 不是成功率</span>
               <strong>{report.coverage}%</strong>
             </div>
           </section>
@@ -1414,8 +1518,22 @@ function App() {
                   onClick={continueToAssembly}
                   disabled={hasFatalManifestFailure || !hardwareInputReady}
                 >
-                  <span>{previewReport ? "先扫描或导入本机报告" : hasCompatibilityWarnings ? "以实验模式继续" : "继续下一步"}</span>
-                  <strong>{previewReport ? "当前仅可预览" : "EFI 组装  03 →"}</strong>
+                  <span>
+                    {previewReport
+                      ? "先扫描或导入本机报告"
+                      : hasFatalManifestFailure
+                        ? "结构或组件完整性失败"
+                        : hasCompatibilityWarnings
+                          ? "以实验模式继续"
+                          : "继续下一步"}
+                  </span>
+                  <strong>
+                    {previewReport
+                      ? "当前仅可预览"
+                      : hasFatalManifestFailure
+                        ? "已停止生成"
+                        : "EFI 组装  03 →"}
+                  </strong>
                 </button>
 
                 <div className="plan-group">
@@ -1486,7 +1604,11 @@ function App() {
                 </p>
               </div>
               <span className={`assembly-mode ${hasCompatibilityWarnings ? "is-experimental" : ""}`}>
-                {hasCompatibilityWarnings ? "实验模式" : "候选模式"}
+                {!buildPlan.autoConfigSupported
+                  ? "手动组件模式"
+                  : hasCompatibilityWarnings
+                    ? "实验候选模式"
+                    : "候选模式"}
               </span>
             </header>
 
@@ -1503,12 +1625,24 @@ function App() {
               </div>
             )}
             <section className="assembly-route-callout" aria-label="推荐组装顺序">
-              <strong>第一次组装，建议先走 A 路径</strong>
-              <ol>
-                <li>生成项目候选 EFI</li>
-                <li>按需加入个人组件或完整 EFI</li>
-                <li>结构与 ocvalidate 通过后再复制测试</li>
-              </ol>
+              <strong>
+                {buildPlan.autoConfigSupported
+                  ? "第一次组装，建议先走 A 路径"
+                  : "当前没有自动配置模板，请选择手动路径"}
+              </strong>
+              {buildPlan.autoConfigSupported ? (
+                <ol>
+                  <li>生成项目候选 EFI</li>
+                  <li>按需加入个人组件或完整 EFI</li>
+                  <li>结构与 ocvalidate 通过后再复制测试</li>
+                </ol>
+              ) : (
+                <ol>
+                  <li>生成官方组件暂存包</li>
+                  <li>提供完整 config.plist，或导入自己的 EFI</li>
+                  <li>结构与 ocvalidate 通过后再复制测试</li>
+                </ol>
+              )}
             </section>
             {scanError && <div className="scan-error" role="alert"><strong>无法继续</strong><span>{scanError}</span></div>}
             {assemblyError && <div className="scan-error" role="alert"><strong>操作已停止</strong><span>{assemblyError}</span></div>}
@@ -1743,7 +1877,7 @@ function App() {
                           className="secondary-button"
                           type="button"
                           onClick={() => scanUserComponents("folder")}
-                          disabled={assemblyBusy !== null || !scaffoldResult?.readyForInstall || !hasNativeRuntime}
+                          disabled={assemblyBusy !== null || !scaffoldResult?.readyForCopy || !hasNativeRuntime}
                         >
                           {assemblyBusy === "component-scan" ? "正在安全扫描…" : "选择 Kext 或组件文件夹"}
                         </button>
@@ -1751,14 +1885,14 @@ function App() {
                           className="secondary-button"
                           type="button"
                           onClick={() => scanUserComponents("files")}
-                          disabled={assemblyBusy !== null || !scaffoldResult?.readyForInstall || !hasNativeRuntime}
+                          disabled={assemblyBusy !== null || !scaffoldResult?.readyForCopy || !hasNativeRuntime}
                         >
                           选择 AML / EFI 文件
                         </button>
                       </div>
                       <div className="merge-readiness">
-                        <span className={scaffoldResult?.readyForInstall ? "is-ready" : ""}>
-                          A {scaffoldResult?.readyForInstall ? "项目候选已就绪" : "先生成项目候选"}
+                        <span className={scaffoldResult?.readyForCopy ? "is-ready" : ""}>
+                          A {scaffoldResult?.readyForCopy ? "项目候选已就绪" : "先生成项目候选"}
                         </span>
                         <span className={componentScan ? "is-ready" : ""}>
                           C {componentScan ? `${componentScan.items.length} 个组件已扫描` : "等待用户组件"}
@@ -1781,7 +1915,7 @@ function App() {
                             onChange={(event) => {
                               setMergePreference(event.target.value as "generated" | "custom");
                               setMergeResult(null);
-                              setInstallResult(null);
+                              setCopyResult(null);
                               setVerificationReview(null);
                               if (activeEfiSource === "merged") {
                                 if (customEfiValidation?.valid) {
@@ -1803,14 +1937,14 @@ function App() {
                           className="secondary-button"
                           type="button"
                           onClick={mergeGeneratedAndCustomEfi}
-                          disabled={assemblyBusy !== null || !scaffoldResult?.readyForInstall || !customEfiValidation?.valid || !hasNativeRuntime}
+                          disabled={assemblyBusy !== null || !scaffoldResult?.readyForCopy || !customEfiValidation?.valid || !hasNativeRuntime}
                         >
                           {assemblyBusy === "merge" ? "正在创建安全融合副本…" : "选择保存位置并融合"}
                         </button>
                       </div>
                       <div className="merge-readiness" aria-label="EFI 融合来源状态">
-                        <span className={scaffoldResult?.readyForInstall ? "is-ready" : ""}>
-                          A {scaffoldResult?.readyForInstall ? "完整候选已就绪" : "等待完整候选 EFI"}
+                        <span className={scaffoldResult?.readyForCopy ? "is-ready" : ""}>
+                          A {scaffoldResult?.readyForCopy ? "完整候选已就绪" : "等待完整候选 EFI"}
                         </span>
                         <span className={customEfiValidation?.valid ? "is-ready" : ""}>
                           B {customEfiValidation?.valid ? "用户 EFI 结构已通过" : "等待用户 EFI 校验"}
@@ -1901,7 +2035,7 @@ function App() {
                         className="build-button"
                         type="button"
                         onClick={buildComponentMerge}
-                        disabled={assemblyBusy !== null || !scaffoldResult?.readyForInstall}
+                        disabled={assemblyBusy !== null || !scaffoldResult?.readyForCopy}
                       >
                         {assemblyBusy === "component-merge" ? "正在生成组件融合副本…" : "按当前选择生成新副本"}
                       </button>
@@ -1910,11 +2044,11 @@ function App() {
                 )}
 
                 {scaffoldResult && (
-                  <div className={`execution-result ${scaffoldResult.readyForInstall ? "is-passed" : "is-warning"}`} role="status">
-                    <strong>{scaffoldResult.readyForInstall ? "候选 EFI：ocvalidate 已通过" : "官方组件暂存包已生成"}</strong>
+                  <div className={`execution-result ${scaffoldResult.readyForCopy ? "is-passed" : "is-warning"}`} role="status">
+                    <strong>{scaffoldResult.readyForCopy ? "候选 EFI：ocvalidate 已通过" : "官方组件暂存包已生成"}</strong>
                     <code>{scaffoldResult.outputPath}</code>
                     <span>
-                      {scaffoldResult.readyForInstall
+                      {scaffoldResult.readyForCopy
                         ? `${scaffoldResult.filesWritten} 个文件；仅代表 config.plist、引用完整性与同版本 ocvalidate 已通过，不代表真机可启动或可安装。`
                         : `${scaffoldResult.filesWritten} 个文件；仍缺少专属配置，不能直接用于启动。`}
                     </span>
@@ -2047,7 +2181,7 @@ function App() {
                 <button className="secondary-button" type="button" onClick={exportManifest} disabled={assemblyBusy !== null}>
                   导出构建清单
                 </button>
-                <button className="build-button" type="button" onClick={continueToInstallMedia} disabled={!efiValidation?.valid || assemblyBusy !== null}>
+                <button className="build-button" type="button" onClick={continueToCopyTest} disabled={!efiValidation?.valid || assemblyBusy !== null}>
                   {efiValidation?.valid ? "进入复制与测试 04 →" : "验证完整 EFI 后继续"}
                 </button>
               </div>
@@ -2058,21 +2192,25 @@ function App() {
             <header className="assembly-header">
               <div>
                 <p className="eyebrow">STEP 04 / SAFE COPY</p>
-                <h2>复制 EFI 到测试目录</h2>
-                <p className="subcopy">将已验证的 EFI 复制到你选择的空目录。此版本不格式化磁盘、不创建分区、不覆盖已有文件。</p>
+                <h2>复制 EFI 到测试分区或导出目录</h2>
+                <p className="subcopy">将已完成当前检查的 EFI 复制到你选择的空位置。此版本不格式化磁盘、不创建分区、不覆盖已有文件。</p>
               </div>
               <span className="assembly-mode">只复制 / 不格式化</span>
             </header>
 
             {assemblyError && <div className="scan-error" role="alert"><strong>操作已停止</strong><span>{assemblyError}</span></div>}
+            <div className="experimental-warning assembly-warning" role="status">
+              <strong>空文件夹不等于可启动介质</strong>
+              <span>如果只选择普通文件夹，结果只能用于导出和备份。需要真机启动时，请先自行准备独立 U 盘的 FAT32 EFI 分区，挂载后选择其根目录。</span>
+            </div>
             <ol className="copy-journey" aria-label="复制和测试顺序">
               <li className="is-complete">
-                <span>01</span><div><strong>确认来源</strong><small>当前 EFI 已通过可执行的结构检查。</small></div>
+                <span>01</span><div><strong>确认来源</strong><small>当前 EFI 已通过可用的静态结构检查；受控候选会额外显示 ocvalidate 结果。</small></div>
               </li>
-              <li className={installResult ? "is-complete" : "is-active"}>
+              <li className={copyResult ? "is-complete" : "is-active"}>
                 <span>02</span><div><strong>复制到空目录</strong><small>工具拒绝覆盖任何已有文件。</small></div>
               </li>
-              <li className={installResult ? "is-active" : ""}>
+              <li className={copyResult ? "is-active" : ""}>
                 <span>03</span><div><strong>从独立介质启动</strong><small>进入 OpenCore 或 Recovery 后再记录真机结果。</small></div>
               </li>
             </ol>
@@ -2109,20 +2247,20 @@ function App() {
               </section>
             </div>
 
-            {installResult && (
+            {copyResult && (
               <div className="install-complete" role="status">
                 <strong>EFI 已安全复制</strong>
-                <code>{installResult.targetPath}</code>
-                <span>共复制 {installResult.filesCopied} 个文件。下一步仍需在外部支持机上进行 Recovery 启动测试。</span>
+                <code>{copyResult.targetPath}</code>
+                <span>共复制 {copyResult.filesCopied} 个文件。如果目标是已挂载的 EFI 分区，下一步才是在目标电脑上测试 Picker 和 Recovery。</span>
               </div>
             )}
 
             <div className="assembly-actions">
-              <button className="secondary-button" type="button" onClick={() => setWorkflowStep(3)} disabled={installBusy}>← 返回 EFI 组装</button>
+              <button className="secondary-button" type="button" onClick={() => setWorkflowStep(3)} disabled={copyBusy}>← 返回 EFI 组装</button>
               <div>
                 <span>只接受空目录；发现已有内容将自动停止</span>
-                <button className="build-button" type="button" onClick={copyValidatedEfi} disabled={installBusy}>
-                  {installBusy ? "正在安全复制…" : installResult ? "重新选择空目录" : "选择空目录并复制 EFI"}
+                <button className="build-button" type="button" onClick={copyValidatedEfi} disabled={copyBusy}>
+                  {copyBusy ? "正在安全复制…" : copyResult ? "重新选择空位置" : "选择空位置并复制 EFI"}
                 </button>
               </div>
             </div>
@@ -2139,7 +2277,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.10-alpha</span>
+        <span>EFI Forge v0.1.11-dev</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

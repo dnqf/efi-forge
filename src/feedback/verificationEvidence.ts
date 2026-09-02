@@ -103,6 +103,8 @@ function validateStageResult(evidence: VerificationEvidence): void {
     if (missing.length > 0) {
       throw new Error(`验证阶段缺少已通过的必要观察项：${missing.join("、")}。`);
     }
+  } else if (!observationKeys.some((key) => evidence.observations[key] === "failed")) {
+    throw new Error("失败的验证证据必须包含至少一个失败观察项。");
   }
 }
 
@@ -149,7 +151,7 @@ export function parseVerificationEvidence(value: unknown): VerificationEvidence 
     throw new Error("验证阶段无效。");
   }
   if (data.result !== "passed" && data.result !== "failed") throw new Error("验证结果无效。");
-  if (!["13", "14", "15"].includes(String(data.targetMacOS))) throw new Error("目标 macOS 无效。");
+  if (!["13", "14", "15", "26"].includes(String(data.targetMacOS))) throw new Error("目标 macOS 无效。");
   const configSha256 = text(data.configSha256, "config SHA-256", 64).toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(configSha256)) throw new Error("config SHA-256 格式无效。");
   if (!Array.isArray(data.notes) || data.notes.length > 12) {
@@ -180,7 +182,7 @@ export function parseVerificationEvidence(value: unknown): VerificationEvidence 
 }
 
 export function serializeVerificationEvidence(evidence: VerificationEvidence): string {
-  return `${JSON.stringify(evidence, null, 2)}\n`;
+  return `${JSON.stringify(parseVerificationEvidence(evidence), null, 2)}\n`;
 }
 
 export function verifyEvidenceBinding(

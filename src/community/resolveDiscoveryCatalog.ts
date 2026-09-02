@@ -75,6 +75,24 @@ function modelSignature(value: string): string {
     .join("");
 }
 
+function hasExplicitRejectionSignal(value: string): boolean {
+  return /(?:DONT|DO[\s_-]*NOT)[\s_-]*USE(?:[\s_-]*THIS)?/i.test(value);
+}
+
+function isDisplayableRepository(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const [owner = "", repository = ""] = url.pathname.split("/").filter(Boolean);
+    return url.protocol === "https:"
+      && url.hostname === "github.com"
+      && owner.toLowerCase() !== "suggested-username"
+      && repository !== "-"
+      && !hasExplicitRejectionSignal(`${owner}/${repository}`);
+  } catch {
+    return false;
+  }
+}
+
 export function resolveDiscoveryCatalog(
   hardware: HardwareReport,
   catalog: CommunityDiscoveryCatalog,
@@ -98,6 +116,9 @@ export function resolveDiscoveryCatalog(
   return catalog.entries
     .flatMap((entry): CommunityDiscoveryMatch[] => {
       if (entry.formFactor !== hardware.system.kind) return [];
+      if (hasExplicitRejectionSignal(`${entry.model} ${entry.note}`)) return [];
+      const repositories = entry.repositories.filter(isDisplayableRepository);
+      if (repositories.length === 0) return [];
 
       const entryTokens = tokens(`${entry.model} ${entry.note}`);
       const overlap = distinctiveOverlap(hardwareTokens, entryTokens);
@@ -123,7 +144,14 @@ export function resolveDiscoveryCatalog(
         "来源未经 EFI Forge 实机审计，仅供人工研究",
       ];
 
-      return [{ entry, confidence, score, reasons }];
+      return [{
+        entry: repositories.length === entry.repositories.length
+          ? entry
+          : { ...entry, repositories },
+        confidence,
+        score,
+        reasons,
+      }];
     })
     .sort((left, right) => right.score - left.score || left.entry.model.localeCompare(right.entry.model, "zh-CN"))
     .slice(0, limit);

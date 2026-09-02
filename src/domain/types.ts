@@ -1,4 +1,4 @@
-export type MacOSVersion = "13" | "14" | "15";
+export type MacOSVersion = "13" | "14" | "15" | "26";
 
 export type DeviceCategory =
   | "firmware"

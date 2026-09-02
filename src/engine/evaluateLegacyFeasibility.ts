@@ -11,6 +11,7 @@ const automaticGenerations = new Set([
   "zen-2",
   "zen-3",
   "zen-4",
+  "zen-5",
 ]);
 
 export function evaluateLegacyFeasibility(

@@ -25,6 +25,9 @@ describe("EFI build manifest", () => {
     expect(first?.checks.find((check) => check.id === "compatibility.no-blockers")?.status).toBe(
       "warning",
     );
+    expect(first?.checks.find((check) => check.id === "boot.external-machine")?.label).toBe(
+      "目标电脑完成启动验证",
+    );
   });
 
   it("separates manifests with different subsystem evidence", () => {

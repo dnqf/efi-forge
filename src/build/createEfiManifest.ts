@@ -138,7 +138,7 @@ export function createEfiManifest(
         status: warningCount === 0 ? "passed" : "warning",
         detail:
           warningCount === 0
-            ? `${compatibility.findings.length} 个检查点，覆盖率 ${compatibility.coverage}%。`
+            ? `${compatibility.findings.length} 个检查点，规则识别度 ${compatibility.coverage}%（不是安装成功率）。`
             : `${warningCount} 个非完整支持结论（其中 ${blockedCount} 个明确高风险）；允许实验继续，但不作为工具推荐。`,
       },
       {
@@ -160,7 +160,7 @@ export function createEfiManifest(
       },
       {
         id: "boot.external-machine",
-        label: "外部支持机完成启动验证",
+        label: "目标电脑完成启动验证",
         status: "pending",
         detail: "候选清单不能替代 OpenCore、Recovery 和安装实测。",
       },

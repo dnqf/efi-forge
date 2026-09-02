@@ -92,6 +92,27 @@ describe("daliansky discovery snapshot", () => {
     expect(resolveDiscoveryCatalog(unknown, dalianskyCatalog)).toEqual([]);
   });
 
+  it("suppresses explicit do-not-use entries and placeholder repositories", () => {
+    const ideapadMatches = resolveDiscoveryCatalog(
+      machine("Lenovo IdeaPad Slim 3 15ABR8 Ryzen 7"),
+      dalianskyCatalog,
+    );
+    const gigabyteMatches = resolveDiscoveryCatalog(
+      machine("Gigabyte H110M-H", "Gigabyte", "desktop"),
+      dalianskyCatalog,
+    );
+    const redmibookMatches = resolveDiscoveryCatalog(
+      machine("Redmibook14 增强版", "Xiaomi", "laptop"),
+      dalianskyCatalog,
+    );
+
+    const matches = [...ideapadMatches, ...gigabyteMatches, ...redmibookMatches];
+    expect(matches.every((match) => !/DONT.?USE/i.test(match.entry.model))).toBe(true);
+    expect(matches.flatMap((match) => match.entry.repositories).every(
+      (url) => !url.includes("suggested-username") && !url.endsWith("/-") && !/DONT.?USE/i.test(url),
+    )).toBe(true);
+  });
+
   it("does not mutate compatibility permissions or the build plan", () => {
     const report = evaluateCompatibility(sampleHardware, "14", compatibilityRules);
     const plan = createBuildPlan(sampleHardware, report);

@@ -215,19 +215,69 @@ fn detect_cpu_generation(name: &str) -> String {
         return "meteor-lake".to_string();
     }
 
+    if lowercase.contains("xeon") {
+        if lowercase.contains("w-11") {
+            return "tiger-lake".to_string();
+        }
+        if lowercase.contains("w-10") {
+            return "comet-lake".to_string();
+        }
+        if lowercase.contains("e-21") || lowercase.contains("e-22") {
+            return "coffee-lake".to_string();
+        }
+    }
+
+    if lowercase.contains("ryzen ai") {
+        return "zen-5".to_string();
+    }
+
     if lowercase.contains("ryzen") {
-        let series = lowercase
+        let model_token = lowercase
             .split_whitespace()
-            .find_map(|part| {
+            .find(|part| {
                 let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
-                (digits.len() == 4).then_some(digits)
+                digits.len() == 4
             })
             .unwrap_or_default();
+        let series: String = model_token
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let suffix = model_token.strip_prefix(&series).unwrap_or_default();
+        let digits = series.chars().collect::<Vec<_>>();
+        let mobile_suffix = suffix.starts_with('u') || suffix.starts_with('h');
         return match series.chars().next() {
-            Some('1' | '2') => "zen-1".to_string(),
-            Some('3') => "zen-2".to_string(),
-            Some('4' | '5') => "zen-3".to_string(),
-            Some('7' | '8' | '9') => "zen-4".to_string(),
+            Some('1') => "zen-1".to_string(),
+            Some('3') if suffix.starts_with('x') => "zen-2".to_string(),
+            Some('4') => "zen-2".to_string(),
+            Some('5')
+                if mobile_suffix
+                    && digits
+                        .get(1)
+                        .is_some_and(|digit| matches!(*digit, '3' | '5' | '7')) =>
+            {
+                "zen-2".to_string()
+            }
+            Some('5') => "zen-3".to_string(),
+            Some('6') if mobile_suffix => "zen-3".to_string(),
+            Some('7') if mobile_suffix && digits.get(2) == Some(&'2') => "zen-2".to_string(),
+            Some('7') if mobile_suffix && digits.get(2) == Some(&'3') => "zen-3".to_string(),
+            Some('7') if mobile_suffix && digits.get(2) == Some(&'5') => "zen-3".to_string(),
+            Some('7') if mobile_suffix && digits.get(2) == Some(&'4') => "zen-4".to_string(),
+            Some('7') if !mobile_suffix => "zen-4".to_string(),
+            Some('8') if suffix.starts_with('x') || suffix.starts_with('g') => "zen-4".to_string(),
+            Some('8')
+                if digits
+                    .get(2)
+                    .is_some_and(|digit| matches!(*digit, '3' | '4')) =>
+            {
+                if digits.get(2) == Some(&'3') {
+                    "zen-3".to_string()
+                } else {
+                    "zen-4".to_string()
+                }
+            }
+            Some('9') if suffix.starts_with('x') => "zen-5".to_string(),
             _ => "amd-zen".to_string(),
         };
     }
@@ -240,6 +290,11 @@ fn detect_cpu_generation(name: &str) -> String {
             .chars()
             .take_while(char::is_ascii_digit)
             .collect();
+        let model_token = lowercase[start + marker.len()..]
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+        let suffix = model_token.strip_prefix(&series).unwrap_or_default();
 
         if series.len() == 4 {
             if series.starts_with("10") {
@@ -261,6 +316,7 @@ fn detect_cpu_generation(name: &str) -> String {
                 Some('5') => "broadwell".to_string(),
                 Some('6') => "skylake".to_string(),
                 Some('7') => "kaby-lake".to_string(),
+                Some('8') if suffix.contains('u') => "kaby-lake-r".to_string(),
                 Some('8' | '9') => "coffee-lake".to_string(),
                 _ => "unknown".to_string(),
             };
@@ -269,7 +325,11 @@ fn detect_cpu_generation(name: &str) -> String {
             return "comet-lake".to_string();
         }
         if series.len() == 5 && series.starts_with("11") {
-            return "tiger-lake".to_string();
+            return if suffix.contains('h') || suffix.contains('u') || suffix.contains('g') {
+                "tiger-lake".to_string()
+            } else {
+                "rocket-lake".to_string()
+            };
         }
         if series.len() == 5 && series.starts_with("12") {
             return "alder-lake".to_string();
@@ -277,9 +337,47 @@ fn detect_cpu_generation(name: &str) -> String {
         if series.len() == 5 && series.starts_with("13") {
             return "raptor-lake".to_string();
         }
+        if series.len() == 5 && series.starts_with("14") {
+            return "raptor-lake-refresh".to_string();
+        }
     }
 
     "unknown".to_string()
+}
+
+fn decode_cpuid_signature(eax: u32) -> (u32, u32) {
+    let base_family = (eax >> 8) & 0x0f;
+    let extended_family = (eax >> 20) & 0xff;
+    let family = if base_family == 0x0f {
+        base_family + extended_family
+    } else {
+        base_family
+    };
+    let base_model = (eax >> 4) & 0x0f;
+    let extended_model = (eax >> 16) & 0x0f;
+    let model = if matches!(base_family, 0x06 | 0x0f) {
+        base_model | (extended_model << 4)
+    } else {
+        base_model
+    };
+    (family, model)
+}
+
+fn detected_cpu_family_model() -> Option<(u32, u32)> {
+    #[cfg(target_arch = "x86")]
+    {
+        // SAFETY: Windows targets supported by EFI Forge run on x86 CPUs that
+        // provide the architectural CPUID leaf 1 signature.
+        let leaf = unsafe { std::arch::x86::__cpuid(1) };
+        return Some(decode_cpuid_signature(leaf.eax));
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let leaf = std::arch::x86_64::__cpuid(1);
+        return Some(decode_cpuid_signature(leaf.eax));
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 fn detected_cpu_features() -> Vec<String> {
@@ -306,9 +404,6 @@ fn validate_required_hardware(report: &HardwareReport) -> Result<(), String> {
     if report.cpu.name.trim().is_empty() || report.cpu.cores == 0 {
         missing.push("CPU 型号/核心数");
     }
-    if report.board.vendor.trim().is_empty() || report.board.model.trim().is_empty() {
-        missing.push("主板厂商/型号");
-    }
     if missing.is_empty() {
         Ok(())
     } else {
@@ -316,6 +411,15 @@ fn validate_required_hardware(report: &HardwareReport) -> Result<(), String> {
             "Windows 硬件扫描缺少关键字段：{}。请检查 WMI/CIM 服务与权限，或导入硬件报告后继续。",
             missing.join("、")
         ))
+    }
+}
+
+fn normalize_optional_hardware(report: &mut HardwareReport) {
+    if report.board.vendor.trim().is_empty() {
+        report.board.vendor = "Unknown".to_string();
+    }
+    if report.board.model.trim().is_empty() {
+        report.board.model = "Unknown".to_string();
     }
 }
 
@@ -344,9 +448,14 @@ fn run_hardware_scan() -> Result<HardwareReport, String> {
     let mut report: HardwareReport = serde_json::from_str(json.trim())
         .map_err(|error| format!("无法解析硬件扫描结果：{error}"))?;
 
+    normalize_optional_hardware(&mut report);
     validate_required_hardware(&report)?;
     report.cpu.generation = detect_cpu_generation(&report.cpu.name);
     report.cpu.features = detected_cpu_features();
+    if let Some((family, model)) = detected_cpu_family_model() {
+        report.cpu.family = family;
+        report.cpu.model = model;
+    }
     Ok(report)
 }
 
@@ -365,7 +474,8 @@ pub async fn scan_hardware() -> Result<HardwareReport, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_cpu_generation, run_hardware_scan, validate_required_hardware, HardwareReport,
+        decode_cpuid_signature, detect_cpu_generation, normalize_optional_hardware,
+        run_hardware_scan, validate_required_hardware, HardwareReport,
     };
 
     #[test]
@@ -399,6 +509,10 @@ mod tests {
             "coffee-lake"
         );
         assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i5-8350U CPU"),
+            "kaby-lake-r"
+        );
+        assert_eq!(
             detect_cpu_generation("Intel(R) Core(TM) i9-9900K CPU"),
             "coffee-lake"
         );
@@ -415,14 +529,25 @@ mod tests {
             "tiger-lake"
         );
         assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-11700K CPU"),
+            "rocket-lake"
+        );
+        assert_eq!(
+            detect_cpu_generation("Intel(R) Core(TM) i7-14700K CPU"),
+            "raptor-lake-refresh"
+        );
+        assert_eq!(
             detect_cpu_generation("Intel Core Ultra 7 155H"),
             "meteor-lake"
         );
+        assert_eq!(detect_cpu_generation("Intel Xeon E-2176M"), "coffee-lake");
+        assert_eq!(detect_cpu_generation("Intel Xeon W-10855M"), "comet-lake");
+        assert_eq!(detect_cpu_generation("Intel Xeon W-11955M"), "tiger-lake");
     }
 
     #[test]
     fn leaves_unknown_generations_unclassified() {
-        assert_eq!(detect_cpu_generation("Intel Xeon W-11955M"), "unknown");
+        assert_eq!(detect_cpu_generation("Intel Pentium Gold G6400"), "unknown");
     }
 
     #[test]
@@ -432,6 +557,22 @@ mod tests {
             "zen-3"
         );
         assert_eq!(detect_cpu_generation("AMD Ryzen 7 3700X"), "zen-2");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 7 7730U"), "zen-3");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 7 7840U"), "zen-4");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 7 7700X"), "zen-4");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 9 9950X"), "zen-5");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 3 5300U"), "zen-2");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 5 5500U"), "zen-2");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 7 5700U"), "zen-2");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 7 5800H"), "zen-3");
+        assert_eq!(detect_cpu_generation("AMD Ryzen 7 7735HS"), "zen-3");
+        assert_eq!(detect_cpu_generation("AMD Ryzen AI 9 HX 370"), "zen-5");
+    }
+
+    #[test]
+    fn decodes_architectural_cpuid_family_and_model() {
+        let signature = (0x0a << 16) | (0x06 << 8) | (0x05 << 4);
+        assert_eq!(decode_cpuid_signature(signature), (6, 0xa5));
     }
 
     #[test]
@@ -450,8 +591,28 @@ mod tests {
 
         let error = validate_required_hardware(&report).unwrap_err();
         assert!(error.contains("CPU 型号/核心数"));
-        assert!(error.contains("主板厂商/型号"));
         assert!(error.contains("导入硬件报告"));
+    }
+
+    #[test]
+    fn keeps_scanning_when_only_board_identity_is_missing() {
+        let mut report: HardwareReport = serde_json::from_str(
+            r#"{
+                "schemaVersion":1,
+                "capturedAt":"2026-08-25T00:00:00Z",
+                "system":{"kind":"desktop","firmware":"uefi","secureBoot":false,"manufacturer":"OEM","productName":"Model"},
+                "cpu":{"vendor":"intel","name":"Intel Core i5-9600K","generation":"unknown","family":6,"model":158,"cores":6,"threads":6,"features":[]},
+                "board":{"vendor":"","model":"","biosVersion":""},
+                "gpus":[],"network":[],"audio":[],"storage":[]
+            }"#,
+        )
+        .unwrap();
+
+        normalize_optional_hardware(&mut report);
+
+        validate_required_hardware(&report).unwrap();
+        assert_eq!(report.board.vendor, "Unknown");
+        assert_eq!(report.board.model, "Unknown");
     }
 
     #[cfg(target_os = "windows")]

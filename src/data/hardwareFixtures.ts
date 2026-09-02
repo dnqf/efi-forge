@@ -63,7 +63,7 @@ const thinkPadT480: HardwareReport = {
   cpu: {
     ...sampleHardware.cpu,
     name: "Intel Core i5-8350U",
-    generation: "coffee-lake",
+    generation: "kaby-lake-r",
     model: 142,
     cores: 4,
     threads: 8,
@@ -219,6 +219,56 @@ const dellOptiPlex7060: HardwareReport = {
   }],
 };
 
+const mixedCometLakeGraphics: HardwareReport = {
+  ...sampleHardware,
+  capturedAt: "2026-09-02T01:00:00+08:00",
+  gpus: [
+    ...sampleHardware.gpus,
+    {
+      id: "gpu-1",
+      name: "NVIDIA GeForce RTX 3070",
+      vendorId: "10DE",
+      deviceId: "2484",
+      identitySource: "direct-pci",
+    },
+  ],
+};
+
+const amdVegaLaptop: HardwareReport = {
+  ...sampleHardware,
+  capturedAt: "2026-09-02T01:10:00+08:00",
+  system: {
+    kind: "laptop",
+    firmware: "uefi",
+    secureBoot: false,
+    manufacturer: "LENOVO",
+    productName: "ThinkPad T14 Gen 1",
+    machineType: "20UD",
+  },
+  cpu: {
+    vendor: "amd",
+    name: "AMD Ryzen 7 PRO 4750U",
+    generation: "zen-2",
+    family: 23,
+    model: 96,
+    cores: 8,
+    threads: 16,
+    features: ["sse4.2", "avx", "avx2"],
+  },
+  board: {
+    vendor: "LENOVO",
+    model: "20UD",
+    biosVersion: "R1BET76W",
+  },
+  gpus: [{
+    id: "gpu-0",
+    name: "AMD Radeon Vega 7 Graphics",
+    vendorId: "1002",
+    deviceId: "1636",
+    identitySource: "direct-pci",
+  }],
+};
+
 export const hardwareFixtures: HardwareFixture[] = [
   {
     id: "thinkpad-t480-20l5",
@@ -275,6 +325,22 @@ export const hardwareFixtures: HardwareFixture[] = [
     expectedStatus: "partial",
     expectedAutomaticPath: false,
     report: dellOptiPlex7060,
+  },
+  {
+    id: "mixed-comet-rtx3070",
+    label: "混搭显卡 · UHD 630 / RTX 3070",
+    purpose: "验证受支持核显与不受支持独显并存时保留选择，并默认生成可撤销的禁用独显参数。",
+    expectedStatus: "blocked",
+    expectedAutomaticPath: true,
+    report: mixedCometLakeGraphics,
+  },
+  {
+    id: "thinkpad-t14-amd-vega",
+    label: "AMD 笔记本研究 · T14 Gen 1 / Vega",
+    purpose: "验证 AMD 笔记本与 Vega APU 进入 NootedRed 人工研究路径，不误套 AMD 台式机模板。",
+    expectedStatus: "partial",
+    expectedAutomaticPath: false,
+    report: amdVegaLaptop,
   },
   {
     id: "blocked-nvidia-pm981",

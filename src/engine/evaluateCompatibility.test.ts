@@ -95,6 +95,131 @@ describe("compatibility engine", () => {
     );
   });
 
+  it.each([
+    ["NVIDIA GeForce GTX 1080", "1B80"],
+    ["NVIDIA GeForce GT 710", "128B"],
+    ["NVIDIA GeForce RTX 5090", "2B85"],
+  ])("classifies %s as unsupported for the selected modern macOS targets", (name, deviceId) => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [{ id: "gpu-nvidia", name, vendorId: "10DE", deviceId }],
+    };
+
+    const report = evaluateCompatibility(hardware, "15", compatibilityRules);
+
+    expect(report.findings.find((finding) => finding.subjectId === "gpu-nvidia")).toEqual(
+      expect.objectContaining({ status: "blocked", ruleId: "gpu.nvidia.modern-macos.blocked" }),
+    );
+    expect(report.canContinue).toBe(true);
+  });
+
+  it("routes an AMD Vega APU to the explicit NootedRed manual path", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [{ id: "gpu-vega-apu", name: "AMD Radeon(TM) Vega 8 Graphics", vendorId: "1002", deviceId: "15D8" }],
+    };
+
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+
+    expect(report.findings.find((finding) => finding.subjectId === "gpu-vega-apu")).toEqual(
+      expect.objectContaining({ status: "partial", ruleId: "gpu.amd.vega-apu.partial" }),
+    );
+    expect(report.canContinue).toBe(true);
+    expect(plan?.components).not.toContain("NootedRed.kext");
+  });
+
+  it("routes post-Comet-Lake Intel CPUs to a manual spoofing path instead of an unknown CPU", () => {
+    const hardware = {
+      ...sampleHardware,
+      cpu: {
+        ...sampleHardware.cpu,
+        name: "Intel Core i7-14700K",
+        generation: "raptor-lake-refresh",
+      },
+    };
+
+    const report = evaluateCompatibility(hardware, "15", compatibilityRules);
+    const finding = report.findings.find((item) => item.subjectId === "cpu");
+
+    expect(finding).toEqual(expect.objectContaining({
+      status: "partial",
+      ruleId: "cpu.intel.post-comet.manual",
+    }));
+    expect(report.canContinue).toBe(true);
+  });
+
+  it("keeps macOS Tahoe available as a manual research target without pretending auto-config support", () => {
+    const hardware = {
+      ...sampleHardware,
+      network: [
+        { id: "network-tahoe-intel", name: "Intel(R) Wireless-AC 9560", vendorId: "8086", deviceId: "A370" },
+      ],
+    };
+    const report = evaluateCompatibility(hardware, "26", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+
+    expect(report.canContinue).toBe(true);
+    expect(report.recommended).toBe(false);
+    expect(plan?.autoConfigSupported).toBe(false);
+    expect(plan?.notes.join(" ")).toContain("Tahoe 26 当前只开放手动研究路径");
+    expect(report.findings.find((finding) => finding.subjectId === "audio-0")).toEqual(
+      expect.objectContaining({ status: "partial", ruleId: "audio.realtek.tahoe.manual" }),
+    );
+    expect(report.findings.find((finding) => finding.subjectId === "network-tahoe-intel")).toEqual(
+      expect.objectContaining({ status: "partial", ruleId: "network.intel.wireless-tahoe.manual" }),
+    );
+    expect(plan?.components).not.toContain("AppleALC.kext");
+  });
+
+  it("routes identified Intel and AMD graphics through Tahoe-specific manual review instead of unknown hardware", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [
+        {
+          id: "gpu-tahoe-amd",
+          name: "AMD Radeon RX 6600 XT",
+          vendorId: "1002",
+          deviceId: "73FF",
+        },
+      ],
+    };
+
+    const report = evaluateCompatibility(hardware, "26", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+
+    expect(report.findings.find((finding) => finding.subjectId === "cpu")).toEqual(
+      expect.objectContaining({ status: "partial", ruleId: "cpu.tahoe.manual-known" }),
+    );
+    expect(report.findings.find((finding) => finding.subjectId === "gpu-tahoe-amd")).toEqual(
+      expect.objectContaining({ status: "partial", ruleId: "gpu.tahoe.intel-amd.manual" }),
+    );
+    expect(report.canContinue).toBe(true);
+    expect(report.recommended).toBe(false);
+    expect(plan?.autoConfigSupported).toBe(false);
+  });
+
+  it("keeps explicitly unsupported modern AMD graphics blocked on Tahoe", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [
+        {
+          id: "gpu-tahoe-unsupported",
+          name: "AMD Radeon RX 7900 XTX",
+          vendorId: "1002",
+          deviceId: "744C",
+        },
+      ],
+    };
+
+    const report = evaluateCompatibility(hardware, "26", compatibilityRules);
+
+    expect(report.findings.find((finding) => finding.subjectId === "gpu-tahoe-unsupported")).toEqual(
+      expect.objectContaining({ status: "blocked", ruleId: "gpu.amd.modern-unsupported.blocked" }),
+    );
+    expect(report.canContinue).toBe(true);
+  });
+
   it("does not imply an SMBIOS recommendation on a manual-only platform", () => {
     const hardware = {
       ...sampleHardware,
@@ -431,6 +556,22 @@ describe("compatibility engine", () => {
         expect.objectContaining({ subjectId: "storage-2200s", ruleId: "storage.micron.2200s.blocked" }),
       ]),
     );
+  });
+
+  it("warns about the SK hynix PC711 laptop NVMe controller", () => {
+    const hardware = {
+      ...sampleHardware,
+      storage: [
+        { id: "storage-pc711", name: "SK hynix PC711 NVMe 512GB", vendorId: "", deviceId: "" },
+      ],
+    };
+
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+
+    expect(report.findings.find((finding) => finding.subjectId === "storage-pc711")).toEqual(
+      expect.objectContaining({ status: "blocked", ruleId: "storage.skhynix.pc711.blocked" }),
+    );
+    expect(report.canContinue).toBe(true);
   });
 
   it("marks I225 as partial and keeps the documented Gigabyte fallback explicit", () => {

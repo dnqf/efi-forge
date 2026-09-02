@@ -86,5 +86,47 @@ describe("hardware report interchange", () => {
     expect(hardwareReportFileName(sampleHardware)).toBe(
       "efi-forge-report-asustek-computer-inc-prime-z490-p.json",
     );
+    const longName = hardwareReportFileName({
+      ...sampleHardware,
+      board: {
+        ...sampleHardware.board,
+        vendor: "Vendor ".repeat(30),
+        model: "Model ".repeat(30),
+      },
+    });
+    expect(longName.length).toBeLessThanOrEqual(128);
+    expect(longName).toMatch(/^efi-forge-report-[a-z0-9-]+\.json$/);
+  });
+
+  it("rejects resource-exhaustion, ambiguous identity and impossible topology inputs", () => {
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      system: { ...sampleHardware.system, productName: "x".repeat(513) },
+    })).toThrow("过长");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      board: { ...sampleHardware.board, biosDate: "2026-02-30" },
+    })).toThrow("YYYY-MM-DD");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      cpu: { ...sampleHardware.cpu, threads: sampleHardware.cpu.cores - 1 },
+    })).toThrow("线程数");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      cpu: { ...sampleHardware.cpu, generation: "generation-".repeat(8) },
+    })).toThrow("cpu.generation");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      gpus: [sampleHardware.gpus[0], { ...sampleHardware.gpus[0] }],
+    })).toThrow("重复设备 ID");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      network: Array.from({ length: 257 }, (_, index) => ({
+        id: `network-${index}`,
+        name: `Network ${index}`,
+        vendorId: "8086",
+        deviceId: "1234",
+      })),
+    })).toThrow("最多包含 256");
   });
 });

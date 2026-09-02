@@ -9,10 +9,10 @@
     "trust": "discovery-only"
   },
   "stats": {
-    "entries": 1384,
-    "laptopEntries": 897,
-    "desktopEntries": 487,
-    "repositories": 1588
+    "entries": 1380,
+    "laptopEntries": 895,
+    "desktopEntries": 485,
+    "repositories": 1584
   },
   "entries": [
     {
@@ -3597,18 +3597,6 @@
       "bootloaderHint": "unknown"
     },
     {
-      "id": "desktop-gigabyte-gigabyte-h110m-h",
-      "formFactor": "desktop",
-      "section": "Gigabyte 技嘉",
-      "model": "Gigabyte H110M-H",
-      "repositories": [
-        "https://github.com/suggested-username/EFI-GIGABYTE-H110M-H-BIGSUR-OPENCORE"
-      ],
-      "guides": [],
-      "note": "BCM94360CD",
-      "bootloaderHint": "opencore"
-    },
-    {
       "id": "desktop-gigabyte-gigabyte-h170-hd3",
       "formFactor": "desktop",
       "section": "Gigabyte 技嘉",
@@ -5520,18 +5508,6 @@
       ],
       "note": "BCM94360CD",
       "bootloaderHint": "mixed"
-    },
-    {
-      "id": "desktop-msi-msi-b365m-pro-vdh",
-      "formFactor": "desktop",
-      "section": "MSI 微星",
-      "model": "MSI B365M Pro-VDH",
-      "repositories": [
-        "https://github.com/suggested-username/MSI-B365M-PRO-VDH-OPENCORE-HACKINTOSH"
-      ],
-      "guides": [],
-      "note": "",
-      "bootloaderHint": "opencore"
     },
     {
       "id": "desktop-msi-msi-b460i-gaming-edge-wifi",
@@ -14099,18 +14075,6 @@
       "bootloaderHint": "clover"
     },
     {
-      "id": "laptop-lenovo-lenovo-ideapad-slim-3-15abr8-ryzen-7-dont-use-this",
-      "formFactor": "laptop",
-      "section": "Lenovo 联想",
-      "model": "LENOVO-IDEAPAD-SLIM-3-15ABR8-ryzen-7-DONT-USE-THIS-",
-      "repositories": [
-        "https://github.com/vivaloscarpinchos2001-jpg/EFI-HACKINTOSH-LENOVO-IDEAPAD-SLIM-3-15ABR8-ryzen-7-DONT-USE-THIS-"
-      ],
-      "guides": [],
-      "note": "",
-      "bootloaderHint": "unknown"
-    },
-    {
       "id": "laptop-lenovo-lenovo-m73",
       "formFactor": "laptop",
       "section": "Lenovo 联想",
@@ -16915,18 +16879,6 @@
       "guides": [],
       "note": "i5-8250u",
       "bootloaderHint": "opencore"
-    },
-    {
-      "id": "laptop-xiaomi-redmibook14",
-      "formFactor": "laptop",
-      "section": "XiaoMi 小米",
-      "model": "Redmibook14 增强版",
-      "repositories": [
-        "https://github.com/haoey/-"
-      ],
-      "guides": [],
-      "note": "",
-      "bootloaderHint": "unknown"
     },
     {
       "id": "laptop-xiaomi-redmibook14ii",

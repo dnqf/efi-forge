@@ -53,6 +53,14 @@ describe("real-machine verification evidence", () => {
     })).toThrow("必要观察项");
   });
 
+  it("rejects contradictory failed evidence without a failed observation", () => {
+    expect(() => parseVerificationEvidence({
+      ...rawEvidence,
+      result: "failed",
+      observations: observationsForStage("recovery-tested", "passed"),
+    })).toThrow("至少一个失败观察项");
+  });
+
   it("creates deterministic, bounded evidence without identity fields", () => {
     const binding = {
       hardwareKey: "exact-machine-key",
@@ -76,6 +84,15 @@ describe("real-machine verification evidence", () => {
     expect(serializeVerificationEvidence(evidence)).not.toMatch(/serial|systemuuid|mlb|rom/i);
   });
 
+  it("revalidates evidence before serializing it", () => {
+    const malformed = {
+      ...parseVerificationEvidence(rawEvidence),
+      configSha256: "tampered-after-parse",
+    };
+
+    expect(() => serializeVerificationEvidence(malformed)).toThrow("config SHA-256 格式无效");
+  });
+
   it("rejects oversized notes and obviously future observations", () => {
     expect(() => parseVerificationEvidence({ ...rawEvidence, notes: ["x".repeat(501)] })).toThrow(
       "过长",
@@ -83,5 +100,11 @@ describe("real-machine verification evidence", () => {
     expect(() => parseVerificationEvidence({ ...rawEvidence, observedAt: "2999-01-01T00:00:00Z" })).toThrow(
       "观察时间",
     );
+  });
+
+  it("accepts evidence explicitly bound to the macOS Tahoe manual target", () => {
+    const evidence = parseVerificationEvidence({ ...rawEvidence, targetMacOS: "26" });
+
+    expect(evidence.targetMacOS).toBe("26");
   });
 });

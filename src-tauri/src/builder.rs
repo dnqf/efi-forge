@@ -28,13 +28,38 @@ pub struct LockedComponent {
     id: String,
     name: String,
     version: String,
+    repository: String,
+    release_url: String,
     asset_url: String,
     asset_name: String,
     sha256: String,
     size: u64,
+    license: String,
     provides: Vec<String>,
     #[serde(default)]
     asset_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestCheck {
+    id: String,
+    label: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestTrace {
+    hardware_key: String,
+    source_report_captured_at: String,
+    #[serde(default)]
+    intel_clock_mode: Option<String>,
+    #[serde(default)]
+    intel_clock_evidence: Option<serde_json::Value>,
+    verification_stage: String,
+    checks: Vec<ManifestCheck>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -43,6 +68,8 @@ pub struct EfiBuildManifest {
     schema_version: u8,
     #[serde(rename = "targetMacOS")]
     target_mac_os: String,
+    #[serde(flatten)]
+    trace: ManifestTrace,
     profile: String,
     platform: String,
     cpu_core_count: u32,
@@ -70,7 +97,7 @@ struct ComponentLockFile {
 struct AssemblyResult {
     files_written: usize,
     warnings: Vec<String>,
-    ready_for_install: bool,
+    ready_for_copy: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,7 +106,7 @@ pub struct ScaffoldResult {
     output_path: String,
     files_written: usize,
     warnings: Vec<String>,
-    ready_for_install: bool,
+    ready_for_copy: bool,
     validation_level: &'static str,
     config_sha256: Option<String>,
 }
@@ -90,14 +117,14 @@ pub struct EfiValidationResult {
     pub(crate) root_path: String,
     pub(crate) valid: bool,
     pub(crate) errors: Vec<String>,
-    warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     validation_level: &'static str,
     config_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InstallCopyResult {
+pub struct SafeCopyResult {
     target_path: String,
     files_copied: usize,
 }
@@ -167,9 +194,14 @@ pub fn select_usb_map() -> Result<Option<UsbMapSelection>, String> {
 
 fn validate_manifest_lock(manifest: &EfiBuildManifest) -> Result<(), String> {
     if manifest.schema_version != 1
-        || !matches!(manifest.target_mac_os.as_str(), "13" | "14" | "15")
+        || !matches!(manifest.target_mac_os.as_str(), "13" | "14" | "15" | "26")
     {
         return Err("构建清单版本或目标 macOS 不受支持。".into());
+    }
+    validate_manifest_fields(manifest)?;
+    validate_manifest_trace(manifest)?;
+    if manifest.target_mac_os == "26" && manifest.auto_config_supported {
+        return Err("macOS Tahoe 26 只允许手动组件路径，不能启用自动 config.plist。".into());
     }
     let lock: ComponentLockFile =
         serde_json::from_str(include_str!("../../src/data/components.lock.json"))
@@ -214,6 +246,141 @@ fn validate_manifest_lock(manifest: &EfiBuildManifest) -> Result<(), String> {
     Ok(())
 }
 
+fn invalid_manifest_text(value: &str, maximum: usize) -> bool {
+    value.trim().is_empty()
+        || value.len() > maximum
+        || value.chars().any(|character| character.is_control())
+}
+
+fn validate_manifest_fields(manifest: &EfiBuildManifest) -> Result<(), String> {
+    for (label, value, maximum) in [
+        ("profile", manifest.profile.as_str(), 256),
+        ("platform", manifest.platform.as_str(), 64),
+        ("chipset", manifest.chipset.as_str(), 64),
+        ("SMBIOS 机型", manifest.smbios_model.as_str(), 64),
+    ] {
+        if invalid_manifest_text(value, maximum) {
+            return Err(format!("构建清单的 {label} 为空、过长或包含控制字符。"));
+        }
+    }
+    if !(1..=256).contains(&manifest.cpu_core_count) {
+        return Err("构建清单的 CPU 核心数必须在 1 到 256 之间。".into());
+    }
+    if manifest
+        .igpu_platform_id
+        .as_deref()
+        .is_some_and(|platform_id| {
+            platform_id.len() != 8
+                || !platform_id
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        })
+    {
+        return Err("构建清单的核显平台 ID 必须是八位十六进制值。".into());
+    }
+    if manifest.setup_virtual_map.is_some() && manifest.platform != "amd-zen" {
+        return Err("SetupVirtualMap 用户选择只适用于 AMD Zen 构建路径。".into());
+    }
+    if manifest.trace.intel_clock_mode.is_some() && !manifest.platform.starts_with("intel-") {
+        return Err("Intel 时钟模式只能用于 Intel 构建路径。".into());
+    }
+    Ok(())
+}
+
+fn validate_manifest_trace(manifest: &EfiBuildManifest) -> Result<(), String> {
+    if invalid_manifest_text(&manifest.trace.hardware_key, 16_384) {
+        return Err("构建清单硬件指纹为空、过长或包含控制字符。".into());
+    }
+    if invalid_manifest_text(&manifest.trace.source_report_captured_at, 64) {
+        return Err("构建清单采集时间无效。".into());
+    }
+    if manifest.trace.verification_stage != "candidate" {
+        return Err("新构建清单的验证阶段必须是 candidate。".into());
+    }
+    if manifest.trace.checks.is_empty() || manifest.trace.checks.len() > 64 {
+        return Err("构建清单必须包含 1 到 64 个验证闸门。".into());
+    }
+    let mut check_ids = BTreeSet::new();
+    for check in &manifest.trace.checks {
+        if invalid_manifest_text(&check.id, 128)
+            || invalid_manifest_text(&check.label, 256)
+            || invalid_manifest_text(&check.detail, 2_048)
+            || !matches!(
+                check.status.as_str(),
+                "passed" | "warning" | "pending" | "failed"
+            )
+        {
+            return Err("构建清单包含无效的验证闸门。".into());
+        }
+        if !check_ids.insert(check.id.as_str()) {
+            return Err(format!("构建清单包含重复验证闸门：{}", check.id));
+        }
+        if check.status == "failed" {
+            return Err(format!("构建清单的验证闸门未通过：{}", check.label));
+        }
+    }
+    let check_status = |id: &str| {
+        manifest
+            .trace
+            .checks
+            .iter()
+            .find(|check| check.id == id)
+            .map(|check| check.status.as_str())
+    };
+    if !matches!(
+        check_status("compatibility.no-blockers"),
+        Some("passed" | "warning")
+    ) || check_status("components.sha256-locked") != Some("passed")
+        || check_status("config.ocvalidate") != Some("pending")
+        || check_status("boot.external-machine") != Some("pending")
+    {
+        return Err("构建清单缺少必需验证闸门，或闸门状态与候选阶段不一致。".into());
+    }
+    if manifest
+        .trace
+        .intel_clock_mode
+        .as_deref()
+        .is_some_and(|mode| !matches!(mode, "awac" | "manual"))
+    {
+        return Err("构建清单包含未知的 Intel 时钟模式。".into());
+    }
+    if manifest
+        .trace
+        .intel_clock_evidence
+        .as_ref()
+        .is_some_and(|evidence| {
+            serde_json::to_vec(evidence).is_ok_and(|bytes| bytes.len() > 64 * 1024)
+        })
+    {
+        return Err("构建清单的 DSDT 静态证据超过 64 KB。".into());
+    }
+    for (label, values, maximum_items, maximum_length) in [
+        ("启动参数", &manifest.boot_args, 32, 256),
+        ("ACPI 清单", &manifest.acpi, 64, 256),
+        ("Driver 清单", &manifest.drivers, 64, 256),
+        ("构建备注", &manifest.notes, 128, 2_048),
+    ] {
+        if values.len() > maximum_items
+            || values
+                .iter()
+                .any(|value| invalid_manifest_text(value, maximum_length))
+        {
+            return Err(format!("{label}包含过多、空白、过长或带控制字符的内容。"));
+        }
+    }
+    for (label, values) in [
+        ("启动参数", &manifest.boot_args),
+        ("ACPI 清单", &manifest.acpi),
+        ("Driver 清单", &manifest.drivers),
+    ] {
+        let mut unique = BTreeSet::new();
+        if values.iter().any(|value| !unique.insert(value.as_str())) {
+            return Err(format!("{label}包含重复项。"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_automatic_platform(manifest: &EfiBuildManifest) -> Result<(), String> {
     let acpi = manifest
         .acpi
@@ -233,7 +400,7 @@ fn validate_automatic_platform(manifest: &EfiBuildManifest) -> Result<(), String
         }
     };
 
-    match manifest.platform.as_str() {
+    let platform_result = match manifest.platform.as_str() {
         "amd-zen"
             if matches!(
                 manifest.chipset.as_str(),
@@ -291,7 +458,24 @@ fn validate_automatic_platform(manifest: &EfiBuildManifest) -> Result<(), String
             "{} / {} 尚未开放自动 config.plist；仍可使用组件导出或自有 EFI。",
             manifest.platform, manifest.chipset
         )),
+    };
+    platform_result?;
+
+    let graphics_configuration = manifest.igpu_platform_id.is_some()
+        || manifest
+            .boot_args
+            .iter()
+            .any(|argument| argument == "-wegnoegpu");
+    let has_whatever_green = manifest.components.iter().any(|component| {
+        component
+            .provides
+            .iter()
+            .any(|provided| provided == "WhateverGreen.kext")
+    });
+    if graphics_configuration && !has_whatever_green {
+        return Err("自动显卡配置需要锁定版 WhateverGreen.kext，构建已停止。".into());
     }
+    Ok(())
 }
 
 #[tauri::command]
@@ -307,7 +491,7 @@ pub fn validate_custom_efi() -> Result<Option<EfiValidationResult>, String> {
 }
 
 #[tauri::command]
-pub fn copy_efi_to_empty_target(source_root: String) -> Result<Option<InstallCopyResult>, String> {
+pub fn copy_efi_to_empty_target(source_root: String) -> Result<Option<SafeCopyResult>, String> {
     let source = PathBuf::from(source_root);
     let validation = validate_efi_root(&source)?;
     if !validation.valid {
@@ -385,14 +569,15 @@ fn build_scaffold(
     ));
     fs::create_dir(&staging).map_err(|error| format!("无法创建构建暂存目录：{error}"))?;
 
-    let build_result = assemble_scaffold(&staging, manifest, usb_map);
-    if let Err(error) = build_result {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
-    }
-    let assembly = build_result.unwrap();
+    let assembly = match assemble_scaffold(&staging, manifest, usb_map) {
+        Ok(assembly) => assembly,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
 
-    let config_sha256 = if assembly.ready_for_install {
+    let config_sha256 = if assembly.ready_for_copy {
         Some(hash_file_sha256(&staging.join("EFI/OC/config.plist"))?)
     } else {
         None
@@ -407,8 +592,8 @@ fn build_scaffold(
         output_path: output.display().to_string(),
         files_written: assembly.files_written,
         warnings: assembly.warnings,
-        ready_for_install: assembly.ready_for_install,
-        validation_level: if assembly.ready_for_install {
+        ready_for_copy: assembly.ready_for_copy,
+        validation_level: if assembly.ready_for_copy {
             "ocvalidate-passed"
         } else {
             "components-only"
@@ -521,7 +706,7 @@ fn assemble_scaffold(
     }
 
     let mut warnings = Vec::new();
-    let ready_for_install = if manifest.auto_config_supported {
+    let ready_for_copy = if manifest.auto_config_supported {
         match manifest.platform.as_str() {
             "amd-zen" => generate_amd_config(root, manifest)?,
             "intel-coffee-lake" | "intel-comet-lake" => generate_intel_config(root, manifest)?,
@@ -570,7 +755,7 @@ fn assemble_scaffold(
         .map_err(|error| format!("无法写入构建清单：{error}"))?;
     files_written += 1;
 
-    let notes = if ready_for_install {
+    let notes = if ready_for_copy {
         "EFI Forge 候选 EFI\r\n\r\n已完成：锁定下载、SHA-256、config.plist 生成、引用完整性和同版本 ocvalidate。\r\n\r\n未完成：真实电脑的 OpenCore 启动、Recovery 与安装验证。请先复制到独立空 U 盘测试，勿直接替换现有 EFI。\r\n".to_string()
     } else {
         format!(
@@ -582,11 +767,60 @@ fn assemble_scaffold(
         .map_err(|error| format!("无法写入构建说明：{error}"))?;
     files_written += 1;
 
+    // Build helpers are required while generating and validating the candidate,
+    // but exporting extra Windows executables increases confusion and antivirus
+    // noise. A ready candidate no longer needs the source templates either;
+    // component-only packs retain those plist sources for manual review.
+    let removed_files = remove_build_only_artifacts(root, ready_for_copy)?;
+    files_written = files_written.saturating_sub(removed_files);
+
     Ok(AssemblyResult {
         files_written,
         warnings,
-        ready_for_install,
+        ready_for_copy,
     })
+}
+
+fn remove_build_only_artifacts(root: &Path, ready_for_copy: bool) -> Result<usize, String> {
+    let mut removed_files = 0;
+    let mut targets = vec![root.join("_tools")];
+    if ready_for_copy {
+        targets.push(root.join("_sources"));
+    }
+
+    for target in targets {
+        if !target.exists() {
+            continue;
+        }
+        removed_files += count_regular_files(&target)?;
+        fs::remove_dir_all(&target)
+            .map_err(|error| format!("无法清理构建专用资源 {}：{error}", target.display()))?;
+    }
+    Ok(removed_files)
+}
+
+fn count_regular_files(root: &Path) -> Result<usize, String> {
+    let mut count = 0;
+    for entry in fs::read_dir(root)
+        .map_err(|error| format!("无法读取构建专用资源 {}：{error}", root.display()))?
+    {
+        let entry = entry.map_err(|error| format!("无法读取构建专用资源：{error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("无法读取构建资源类型：{error}"))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "构建专用资源中不应出现链接：{}",
+                entry.path().display()
+            ));
+        }
+        if file_type.is_dir() {
+            count += count_regular_files(&entry.path())?;
+        } else if file_type.is_file() {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn generate_amd_config(root: &Path, manifest: &EfiBuildManifest) -> Result<(), String> {
@@ -1334,11 +1568,35 @@ fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| format!("无法初始化下载器：{error}"))?;
-    let response = client
-        .get(&component.asset_url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| format!("下载 {} 失败：{error}", component.name))?;
+    let mut response = None;
+    let mut last_error = None;
+    for attempt in 1_u64..=3 {
+        match client
+            .get(&component.asset_url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+        {
+            Ok(result) => {
+                response = Some(result);
+                break;
+            }
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 3 {
+                    std::thread::sleep(Duration::from_millis(attempt * 500));
+                }
+            }
+        }
+    }
+    let response = response.ok_or_else(|| {
+        format!(
+            "下载 {} 失败（已尝试 3 次）：{}",
+            component.name,
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "未知网络错误".to_string())
+        )
+    })?;
     if response
         .content_length()
         .is_some_and(|length| length != component.size)
@@ -1351,23 +1609,37 @@ fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf
     let mut limited_response = response.take(component.size + 1);
     let mut file = File::create(&partial)
         .map_err(|error| format!("无法创建 {} 的下载缓存：{error}", component.name))?;
-    io::copy(&mut limited_response, &mut file)
-        .map_err(|error| format!("下载 {} 时写入失败：{error}", component.name))?;
+    if let Err(error) = io::copy(&mut limited_response, &mut file) {
+        drop(file);
+        let _ = fs::remove_file(&partial);
+        return Err(format!("下载 {} 时写入失败：{error}", component.name));
+    }
     drop(file);
 
-    if !verify_file(&partial, component)? {
-        let _ = fs::remove_file(&partial);
-        return Err(format!(
-            "{} 的大小或 SHA-256 与锁定清单不一致，构建已停止。",
-            component.name
-        ));
+    match verify_file(&partial, component) {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = fs::remove_file(&partial);
+            return Err(format!(
+                "{} 的大小或 SHA-256 与锁定清单不一致，构建已停止。",
+                component.name
+            ));
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
     }
     if destination.exists() {
-        fs::remove_file(&destination)
-            .map_err(|error| format!("无法更新损坏的组件缓存：{error}"))?;
+        if let Err(error) = fs::remove_file(&destination) {
+            let _ = fs::remove_file(&partial);
+            return Err(format!("无法更新损坏的组件缓存：{error}"));
+        }
     }
-    fs::rename(&partial, &destination)
-        .map_err(|error| format!("无法保存 {} 的已验证缓存：{error}", component.name))?;
+    if let Err(error) = fs::rename(&partial, &destination) {
+        let _ = fs::remove_file(&partial);
+        return Err(format!("无法保存 {} 的已验证缓存：{error}", component.name));
+    }
     Ok(destination)
 }
 
@@ -1524,7 +1796,15 @@ pub(crate) fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, 
         .transpose()?;
     if config.is_file() {
         match plist::Value::from_file(&config) {
-            Ok(value) => validate_config_references(&root, &value, &mut errors),
+            Ok(value) => {
+                validate_config_references(&root, &value, &mut errors);
+                if has_populated_smbios_identity(&value) {
+                    warnings.push(
+                        "config.plist 包含已填写的 SMBIOS 身份字段。若来源不是你自己的 EFI，请在复制前生成并替换为仅供本机使用的身份；工具不会显示或上传这些值。"
+                            .into(),
+                    );
+                }
+            }
             Err(error) => errors.push(format!("config.plist 无法解析：{error}")),
         }
     }
@@ -1543,6 +1823,25 @@ pub(crate) fn validate_efi_root(selected: &Path) -> Result<EfiValidationResult, 
     })
 }
 
+fn has_populated_smbios_identity(value: &plist::Value) -> bool {
+    let Some(generic) = value
+        .as_dictionary()
+        .and_then(|config| config.get("PlatformInfo"))
+        .and_then(plist::Value::as_dictionary)
+        .and_then(|platform_info| platform_info.get("Generic"))
+        .and_then(plist::Value::as_dictionary)
+    else {
+        return false;
+    };
+    ["SystemSerialNumber", "MLB", "SystemUUID", "ROM"]
+        .iter()
+        .any(|key| match generic.get(key) {
+            Some(plist::Value::String(value)) => !value.trim().is_empty(),
+            Some(plist::Value::Data(value)) => !value.is_empty(),
+            _ => false,
+        })
+}
+
 fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Vec<String>) {
     let Some(config) = value.as_dictionary() else {
         errors.push("config.plist 顶层不是字典。".into());
@@ -1558,8 +1857,12 @@ fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Ve
         "PlatformInfo",
         "UEFI",
     ] {
-        if !config.contains_key(key) {
-            errors.push(format!("config.plist 缺少顶层键：{key}"));
+        match config.get(key) {
+            None => errors.push(format!("config.plist 缺少顶层键：{key}")),
+            Some(value) if value.as_dictionary().is_none() => {
+                errors.push(format!("config.plist 顶层键 {key} 不是字典。"));
+            }
+            Some(_) => {}
         }
     }
 
@@ -1568,6 +1871,8 @@ fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Ve
         &["ACPI", "Add"],
         "Path",
         &root.join("EFI/OC/ACPI"),
+        false,
+        &["aml", "bin"],
         errors,
     );
     validate_enabled_paths(
@@ -1575,6 +1880,8 @@ fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Ve
         &["Kernel", "Add"],
         "BundlePath",
         &root.join("EFI/OC/Kexts"),
+        true,
+        &["kext"],
         errors,
     );
     validate_enabled_kext_subpaths(config, &root.join("EFI/OC/Kexts"), errors);
@@ -1583,6 +1890,17 @@ fn validate_config_references(root: &Path, value: &plist::Value, errors: &mut Ve
         &["UEFI", "Drivers"],
         "Path",
         &root.join("EFI/OC/Drivers"),
+        false,
+        &["efi"],
+        errors,
+    );
+    validate_enabled_paths(
+        config,
+        &["Misc", "Tools"],
+        "Path",
+        &root.join("EFI/OC/Tools"),
+        false,
+        &["efi"],
         errors,
     );
 }
@@ -1625,9 +1943,17 @@ fn validate_enabled_kext_subpaths(
 
         for path_key in ["ExecutablePath", "PlistPath"] {
             let Some(relative) = dict.get(path_key).and_then(plist::Value::as_string) else {
+                if path_key == "PlistPath" {
+                    errors.push(format!("Kernel/Add 中启用的 {bundle_path} 缺少 PlistPath"));
+                }
                 continue;
             };
             if relative.is_empty() {
+                if path_key == "PlistPath" {
+                    errors.push(format!(
+                        "Kernel/Add 中启用的 {bundle_path} 的 PlistPath 不能为空"
+                    ));
+                }
                 continue;
             }
             if !is_safe_relative_path(relative) || !bundle.join(relative).is_file() {
@@ -1652,6 +1978,8 @@ fn validate_enabled_paths(
     keys: &[&str],
     path_key: &str,
     directory: &Path,
+    expect_directory: bool,
+    allowed_extensions: &[&str],
     errors: &mut Vec<String>,
 ) {
     let mut value = config.get(keys[0]);
@@ -1661,33 +1989,81 @@ fn validate_enabled_paths(
             .and_then(|dict| dict.get(key));
     }
     let Some(entries) = value.and_then(plist::Value::as_array) else {
+        errors.push(if value.is_some() {
+            format!("{} 不是数组", keys.join("/"))
+        } else {
+            format!("{} 缺失", keys.join("/"))
+        });
         return;
     };
-    for entry in entries {
+    let mut seen_enabled_paths = BTreeSet::new();
+    for (index, entry) in entries.iter().enumerate() {
         let Some(dict) = entry.as_dictionary() else {
+            errors.push(format!("{} 第 {} 项不是字典", keys.join("/"), index + 1));
             continue;
         };
-        if !dict
-            .get("Enabled")
-            .and_then(plist::Value::as_boolean)
-            .unwrap_or(false)
-        {
-            continue;
+        match dict.get("Enabled") {
+            Some(plist::Value::Boolean(false)) => continue,
+            Some(plist::Value::Boolean(true)) => {}
+            Some(_) => {
+                errors.push(format!("{} 中 Enabled 不是布尔值", keys.join("/")));
+                continue;
+            }
+            None => {
+                errors.push(format!("{} 中条目缺少 Enabled", keys.join("/")));
+                continue;
+            }
         }
         let Some(relative) = dict.get(path_key).and_then(plist::Value::as_string) else {
             errors.push(format!("{} 中启用项缺少 {path_key}", keys.join("/")));
             continue;
         };
-        if !is_safe_relative_path(relative) || !directory.join(relative).exists() {
+        let normalized_path = relative.replace('\\', "/").to_ascii_lowercase();
+        if !seen_enabled_paths.insert(normalized_path) {
+            errors.push(format!("{} 重复启用了同一路径：{relative}", keys.join("/")));
+        }
+        let safe_path = is_safe_relative_path(relative);
+        let extension_allowed = Path::new(relative)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                allowed_extensions
+                    .iter()
+                    .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+            });
+        if !extension_allowed {
             errors.push(format!(
-                "{} 引用的文件不存在或路径不安全：{relative}",
-                keys.join("/")
+                "{} 引用了不允许的扩展名：{relative}；允许 {}",
+                keys.join("/"),
+                allowed_extensions
+                    .iter()
+                    .map(|extension| format!(".{extension}"))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ));
+        }
+        let expected_type = safe_path
+            && extension_allowed
+            && if expect_directory {
+                directory.join(relative).is_dir()
+            } else {
+                directory.join(relative).is_file()
+            };
+        if !expected_type {
+            errors.push(format!(
+                "{} 引用的{}不存在或路径不安全：{relative}",
+                keys.join("/"),
+                if expect_directory {
+                    "目录"
+                } else {
+                    "普通文件"
+                }
             ));
         }
     }
 }
 
-fn copy_to_empty_target(source_root: &Path, target: &Path) -> Result<InstallCopyResult, String> {
+fn copy_to_empty_target(source_root: &Path, target: &Path) -> Result<SafeCopyResult, String> {
     let source_root = canonicalize_plain_directory(source_root, "源 EFI")?;
     let target = canonicalize_plain_directory(target, "目标目录")?;
     if target == source_root || target.starts_with(&source_root) || source_root.starts_with(&target)
@@ -1702,18 +2078,31 @@ fn copy_to_empty_target(source_root: &Path, target: &Path) -> Result<InstallCopy
 
     let staging = target.join(format!(".efi-forge-copy-{}", std::process::id()));
     fs::create_dir(&staging).map_err(|error| format!("无法创建复制暂存目录：{error}"))?;
-    let copied = copy_directory(&source_root.join("EFI"), &staging.join("EFI"));
-    if let Err(error) = copied {
+    let files_copied = match copy_directory(&source_root.join("EFI"), &staging.join("EFI")) {
+        Ok(files_copied) => files_copied,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let staged_validation = match validate_efi_root(&staging) {
+        Ok(validation) => validation,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("无法复验复制后的 EFI：{error}"));
+        }
+    };
+    if !staged_validation.valid {
+        let details = staged_validation.errors.join("；");
         let _ = fs::remove_dir_all(&staging);
-        return Err(error);
+        return Err(format!("复制后的 EFI 结构校验失败：{details}"));
     }
-    let files_copied = copied.unwrap();
     fs::rename(staging.join("EFI"), target.join("EFI")).map_err(|error| {
         let _ = fs::remove_dir_all(&staging);
         format!("无法完成 EFI 复制：{error}")
     })?;
     fs::remove_dir(&staging).map_err(|error| format!("无法清理复制暂存目录：{error}"))?;
-    Ok(InstallCopyResult {
+    Ok(SafeCopyResult {
         target_path: target.join("EFI").display().to_string(),
         files_copied,
     })
@@ -1774,6 +2163,11 @@ fn merge_efi_roots(
                 .into(),
             "同名冲突保留主来源版本；次来源只补充主来源中不存在的文件。".into(),
         ];
+        for warning in &validation.warnings {
+            if !warnings.contains(warning) {
+                warnings.push(warning.clone());
+            }
+        }
         if !inactive_added_files.is_empty() {
             warnings.push(format!(
                 "有 {} 个补入组件未被主来源 config.plist 启用，已保留但不会自动加载。",
@@ -2064,32 +2458,63 @@ fn validate_efi_tree_safety(
 }
 
 pub(crate) fn copy_directory(source: &Path, destination: &Path) -> Result<usize, String> {
+    copy_directory_bounded(source, destination, 0, &mut EfiTreeBudget::default())
+}
+
+fn copy_directory_bounded(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    budget: &mut EfiTreeBudget,
+) -> Result<usize, String> {
+    if depth > MAX_EFI_TREE_DEPTH {
+        return Err(format!(
+            "EFI 目录超过 {MAX_EFI_TREE_DEPTH} 层，复制已停止。"
+        ));
+    }
     fs::create_dir(destination).map_err(|error| format!("无法创建目标 EFI 目录：{error}"))?;
     let mut copied = 0;
     for entry in fs::read_dir(source).map_err(|error| format!("无法读取源 EFI：{error}"))? {
         let entry = entry.map_err(|error| format!("无法读取源 EFI 条目：{error}"))?;
-        let file_type = entry
-            .file_type()
+        let metadata = fs::symlink_metadata(entry.path())
             .map_err(|error| format!("无法检查 EFI 条目：{error}"))?;
+        budget.entries += 1;
+        if budget.entries > MAX_EFI_TREE_ENTRIES {
+            return Err(format!(
+                "EFI 条目超过 {MAX_EFI_TREE_ENTRIES} 个，复制已停止。"
+            ));
+        }
         let target = destination.join(entry.file_name());
-        if file_type.is_symlink() || is_reparse_point(&entry.path())? {
+        if metadata.file_type().is_symlink() || is_reparse_point(&entry.path())? {
             return Err(format!(
                 "EFI 中包含符号链接，复制已停止：{}",
                 entry.path().display()
             ));
         }
-        if file_type.is_dir() {
-            copied += copy_directory(&entry.path(), &target)?;
-        } else if file_type.is_file() {
+        if metadata.is_dir() {
+            copied += copy_directory_bounded(&entry.path(), &target, depth + 1, budget)?;
+        } else if metadata.is_file() {
             if is_forbidden_windows_payload(&entry.path()) {
                 return Err(format!(
                     "EFI 中包含不允许的 Windows 程序或脚本，复制已停止：{}",
                     entry.path().display()
                 ));
             }
-            fs::copy(entry.path(), target)
+            if budget.bytes.saturating_add(metadata.len()) > MAX_EFI_TREE_BYTES {
+                return Err("EFI 文件总量超过 2 GB，复制已停止。".into());
+            }
+            let bytes_copied = fs::copy(entry.path(), target)
                 .map_err(|error| format!("复制 EFI 文件失败：{error}"))?;
+            budget.bytes = budget.bytes.saturating_add(bytes_copied);
+            if budget.bytes > MAX_EFI_TREE_BYTES {
+                return Err("EFI 文件总量超过 2 GB，复制已停止。".into());
+            }
             copied += 1;
+        } else {
+            return Err(format!(
+                "EFI 中包含不支持的文件类型，复制已停止：{}",
+                entry.path().display()
+            ));
         }
     }
     Ok(copied)
@@ -2149,10 +2574,13 @@ fn safe_name(value: &str) -> String {
             }
         })
         .collect();
-    if filtered.trim_matches('-').is_empty() {
+    let bounded = filtered.chars().take(96).collect::<String>();
+    let bounded = bounded.trim_end_matches('-');
+
+    if bounded.trim_matches('-').is_empty() {
         "custom".into()
     } else {
-        filtered
+        bounded.to_string()
     }
 }
 
@@ -2179,6 +2607,42 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("efi-forge-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn test_manifest_trace() -> ManifestTrace {
+        ManifestTrace {
+            hardware_key: "test-hardware-key".into(),
+            source_report_captured_at: "2026-09-02T00:00:00Z".into(),
+            intel_clock_mode: None,
+            intel_clock_evidence: None,
+            verification_stage: "candidate".into(),
+            checks: vec![
+                ManifestCheck {
+                    id: "compatibility.no-blockers".into(),
+                    label: "硬件兼容性评估".into(),
+                    status: "warning".into(),
+                    detail: "允许实验继续".into(),
+                },
+                ManifestCheck {
+                    id: "components.sha256-locked".into(),
+                    label: "组件锁".into(),
+                    status: "passed".into(),
+                    detail: "已锁定".into(),
+                },
+                ManifestCheck {
+                    id: "config.ocvalidate".into(),
+                    label: "配置验证".into(),
+                    status: "pending".into(),
+                    detail: "等待构建".into(),
+                },
+                ManifestCheck {
+                    id: "boot.external-machine".into(),
+                    label: "真机验证".into(),
+                    status: "pending".into(),
+                    detail: "等待实测".into(),
+                },
+            ],
+        }
     }
 
     fn create_valid_efi(root: &Path) {
@@ -2209,14 +2673,215 @@ mod tests {
                 plist::Value::Dictionary(plist::Dictionary::new()),
             );
         }
+        for (section, key) in [
+            ("ACPI", "Add"),
+            ("Kernel", "Add"),
+            ("Misc", "Tools"),
+            ("UEFI", "Drivers"),
+        ] {
+            config
+                .get_mut(section)
+                .and_then(plist::Value::as_dictionary_mut)
+                .unwrap()
+                .insert(key.into(), plist::Value::Array(Vec::new()));
+        }
         plist::Value::Dictionary(config)
             .to_file_xml(root.join("EFI/OC/config.plist"))
             .unwrap();
     }
 
+    fn assert_ready_candidate_export_is_clean(root: &Path) {
+        assert!(!root.join("_tools").exists());
+        assert!(!root.join("_sources").exists());
+        assert!(root.join("README-FIRST.txt").is_file());
+        assert!(root.join("efi-forge-manifest.json").is_file());
+    }
+
     #[test]
     fn safe_name_removes_path_separators() {
         assert_eq!(safe_name("../coffee/lake"), "---coffee-lake");
+        assert_eq!(safe_name(&"a".repeat(300)).len(), 96);
+    }
+
+    #[test]
+    fn native_manifest_serialization_preserves_traceability_and_license_fields() {
+        let lock: TestComponentLock =
+            serde_json::from_str(include_str!("../../src/data/components.lock.json")).unwrap();
+        let component = serde_json::to_value(&lock.components[0]).unwrap();
+        assert_eq!(
+            component["repository"],
+            "https://github.com/acidanthera/OpenCorePkg"
+        );
+        assert_eq!(component["license"], "BSD-3-Clause");
+
+        let raw = serde_json::json!({
+            "schemaVersion": 1,
+            "targetMacOS": "14",
+            "hardwareKey": "desktop|example-board",
+            "sourceReportCapturedAt": "2026-09-02T00:00:00Z",
+            "profile": "traceability-test",
+            "platform": "unknown",
+            "cpuCoreCount": 4,
+            "chipset": "unknown",
+            "smbiosModel": "manual-selection-required",
+            "bootArgs": ["-v"],
+            "autoConfigSupported": false,
+            "components": [],
+            "acpi": [],
+            "drivers": [],
+            "notes": ["manual"],
+            "verificationStage": "candidate",
+            "checks": [{
+                "id": "trace.test",
+                "label": "追踪测试",
+                "status": "pending",
+                "detail": "等待验证"
+            }]
+        });
+        let manifest: EfiBuildManifest = serde_json::from_value(raw).unwrap();
+        let serialized = serde_json::to_value(manifest).unwrap();
+
+        assert_eq!(serialized["hardwareKey"], "desktop|example-board");
+        assert_eq!(serialized["sourceReportCapturedAt"], "2026-09-02T00:00:00Z");
+        assert_eq!(serialized["verificationStage"], "candidate");
+        assert_eq!(serialized["checks"][0]["id"], "trace.test");
+    }
+
+    #[test]
+    fn rejects_tampered_component_provenance_and_non_candidate_claims() {
+        let lock: TestComponentLock =
+            serde_json::from_str(include_str!("../../src/data/components.lock.json")).unwrap();
+        let mut components = lock
+            .components
+            .into_iter()
+            .filter(|component| {
+                matches!(component.id.as_str(), "opencore" | "lilu" | "virtual-smc")
+            })
+            .collect::<Vec<_>>();
+        components[0].license = "tampered-license".into();
+        let mut manifest = EfiBuildManifest {
+            schema_version: 1,
+            target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
+            profile: "provenance-test".into(),
+            platform: "unknown".into(),
+            cpu_core_count: 4,
+            chipset: "unknown".into(),
+            smbios_model: "manual-selection-required".into(),
+            igpu_platform_id: None,
+            boot_args: vec!["-v".into()],
+            setup_virtual_map: None,
+            auto_config_supported: false,
+            components,
+            acpi: Vec::new(),
+            drivers: vec!["OpenRuntime.efi".into(), "OpenHfsPlus.efi".into()],
+            notes: vec!["manual".into()],
+        };
+
+        let provenance_error = validate_manifest_lock(&manifest).unwrap_err();
+        assert!(provenance_error.contains("内置版本锁不一致"));
+
+        manifest.trace.verification_stage = "install-verified".into();
+        let stage_error = validate_manifest_lock(&manifest).unwrap_err();
+        assert!(stage_error.contains("必须是 candidate"));
+    }
+
+    #[test]
+    fn rejects_invalid_manifest_scalars_before_building() {
+        let lock: TestComponentLock =
+            serde_json::from_str(include_str!("../../src/data/components.lock.json")).unwrap();
+        let components = lock
+            .components
+            .into_iter()
+            .filter(|component| {
+                matches!(component.id.as_str(), "opencore" | "lilu" | "virtual-smc")
+            })
+            .collect();
+        let mut manifest = EfiBuildManifest {
+            schema_version: 1,
+            target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
+            profile: "invalid\0profile".into(),
+            platform: "unknown".into(),
+            cpu_core_count: 0,
+            chipset: "unknown".into(),
+            smbios_model: "manual-selection-required".into(),
+            igpu_platform_id: Some("not-hex".into()),
+            boot_args: vec!["-v".into()],
+            setup_virtual_map: None,
+            auto_config_supported: false,
+            components,
+            acpi: Vec::new(),
+            drivers: vec!["OpenRuntime.efi".into(), "OpenHfsPlus.efi".into()],
+            notes: vec!["manual".into()],
+        };
+
+        assert!(validate_manifest_lock(&manifest)
+            .unwrap_err()
+            .contains("profile"));
+
+        manifest.profile = "manual-candidate".into();
+        assert!(validate_manifest_lock(&manifest)
+            .unwrap_err()
+            .contains("CPU 核心数"));
+
+        manifest.cpu_core_count = 4;
+        assert!(validate_manifest_lock(&manifest)
+            .unwrap_err()
+            .contains("核显平台 ID"));
+    }
+
+    #[test]
+    fn automatic_graphics_configuration_requires_whatevergreen() {
+        let manifest = EfiBuildManifest {
+            schema_version: 1,
+            target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
+            profile: "intel-coffee-lake-Z390-desktop".into(),
+            platform: "intel-coffee-lake".into(),
+            cpu_core_count: 6,
+            chipset: "Z390".into(),
+            smbios_model: "iMac19,1".into(),
+            igpu_platform_id: Some("07009B3E".into()),
+            boot_args: vec!["-v".into()],
+            setup_virtual_map: None,
+            auto_config_supported: true,
+            components: Vec::new(),
+            acpi: vec![
+                "SSDT-PLUG-DRTNIA.aml".into(),
+                "SSDT-EC-USBX-DESKTOP.aml".into(),
+                "SSDT-AWAC.aml".into(),
+                "SSDT-PMC.aml".into(),
+            ],
+            drivers: Vec::new(),
+            notes: Vec::new(),
+        };
+
+        assert!(validate_automatic_platform(&manifest)
+            .unwrap_err()
+            .contains("WhateverGreen.kext"));
+    }
+
+    #[test]
+    fn removes_executable_build_helpers_from_exported_outputs() {
+        let root = test_root("build-helper-cleanup");
+        fs::create_dir_all(root.join("_tools")).unwrap();
+        fs::create_dir_all(root.join("_sources")).unwrap();
+        fs::write(root.join("_tools/ocvalidate.exe"), b"tool").unwrap();
+        fs::write(root.join("_tools/macserial.exe"), b"tool").unwrap();
+        fs::write(root.join("_sources/Sample.plist"), b"source").unwrap();
+
+        let removed = remove_build_only_artifacts(&root, false).unwrap();
+
+        assert_eq!(removed, 2);
+        assert!(!root.join("_tools").exists());
+        assert!(root.join("_sources/Sample.plist").is_file());
+
+        let removed = remove_build_only_artifacts(&root, true).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!root.join("_sources").exists());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2231,6 +2896,7 @@ mod tests {
         let manifest = EfiBuildManifest {
             schema_version: 1,
             target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
             profile: "manual-uefi-candidate".into(),
             platform: "unknown".into(),
             cpu_core_count: 4,
@@ -2252,10 +2918,53 @@ mod tests {
     }
 
     #[test]
+    fn accepts_tahoe_as_a_manual_component_manifest_target() {
+        let lock: TestComponentLock =
+            serde_json::from_str(include_str!("../../src/data/components.lock.json")).unwrap();
+        let components = lock
+            .components
+            .into_iter()
+            .filter(|component| {
+                matches!(component.id.as_str(), "opencore" | "lilu" | "virtual-smc")
+            })
+            .collect();
+        let mut manifest = EfiBuildManifest {
+            schema_version: 1,
+            target_mac_os: "26".into(),
+            trace: test_manifest_trace(),
+            profile: "tahoe-manual-uefi-candidate".into(),
+            platform: "unknown".into(),
+            cpu_core_count: 8,
+            chipset: "unknown".into(),
+            smbios_model: "manual-selection-required".into(),
+            igpu_platform_id: None,
+            boot_args: vec!["-v".into()],
+            setup_virtual_map: None,
+            auto_config_supported: false,
+            components,
+            acpi: Vec::new(),
+            drivers: vec!["OpenRuntime.efi".into(), "OpenHfsPlus.efi".into()],
+            notes: vec!["manual-only".into()],
+        };
+
+        validate_manifest_lock(&manifest).unwrap();
+
+        let boot_check = manifest.trace.checks.pop().unwrap();
+        let gate_error = validate_manifest_lock(&manifest).unwrap_err();
+        assert!(gate_error.contains("缺少必需验证闸门"));
+        manifest.trace.checks.push(boot_check);
+
+        manifest.auto_config_supported = true;
+        let error = validate_manifest_lock(&manifest).unwrap_err();
+        assert!(error.contains("Tahoe 26") && error.contains("手动组件路径"));
+    }
+
+    #[test]
     fn refuses_unreviewed_intel_chipsets_for_automatic_config() {
         let manifest = EfiBuildManifest {
             schema_version: 1,
             target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
             profile: "intel-coffee-lake-Z370-desktop".into(),
             platform: "intel-coffee-lake".into(),
             cpu_core_count: 6,
@@ -2297,6 +3006,7 @@ mod tests {
             let manifest = EfiBuildManifest {
                 schema_version: 1,
                 target_mac_os: "14".into(),
+                trace: test_manifest_trace(),
                 profile: format!("amd-zen-{chipset}-desktop"),
                 platform: "amd-zen".into(),
                 cpu_core_count: 8,
@@ -2413,6 +3123,43 @@ mod tests {
     }
 
     #[test]
+    fn copy_helper_revalidates_the_staged_efi_before_committing_it() {
+        let source = test_root("invalid-copy-source");
+        let target = test_root("invalid-copy-target");
+        create_valid_efi(&source);
+        fs::remove_file(source.join("EFI/OC/config.plist")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        let error = copy_to_empty_target(&source, &target).unwrap_err();
+
+        assert!(error.contains("复制后的 EFI 结构校验失败"));
+        assert!(fs::read_dir(&target).unwrap().next().is_none());
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn bounded_copy_rejects_an_overly_deep_tree() {
+        let source = test_root("deep-copy-source");
+        let target = test_root("deep-copy-target");
+        let mut current = source.clone();
+        fs::create_dir_all(&current).unwrap();
+        for _ in 0..=MAX_EFI_TREE_DEPTH {
+            current = current.join("nested");
+            fs::create_dir(&current).unwrap();
+        }
+        fs::write(current.join("file.aml"), b"aml").unwrap();
+
+        let error = copy_directory(&source, &target).unwrap_err();
+
+        assert!(error.contains("超过 32 层"));
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
     fn rejects_enabled_kext_with_a_missing_internal_executable() {
         let source = test_root("missing-kext-executable");
         create_valid_efi(&source);
@@ -2458,6 +3205,263 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("Contents/MacOS/Demo")));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn rejects_non_dictionary_opencore_sections() {
+        let source = test_root("invalid-config-section");
+        create_valid_efi(&source);
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .insert("Kernel".into(), plist::Value::String("invalid".into()));
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("Kernel") && error.contains("不是字典")));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_core_config_arrays() {
+        let source = test_root("missing-core-config-array");
+        create_valid_efi(&source);
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("Kernel")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .remove("Add");
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("Kernel/Add") && error.contains("缺失")));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn rejects_non_boolean_enabled_values_and_invalid_component_extensions() {
+        let source = test_root("invalid-enabled-and-extension");
+        create_valid_efi(&source);
+        fs::write(source.join("EFI/OC/ACPI/not-acpi.txt"), b"not-acpi").unwrap();
+        fs::create_dir_all(source.join("EFI/OC/Tools")).unwrap();
+        fs::write(source.join("EFI/OC/Tools/not-a-tool.txt"), b"not-efi").unwrap();
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+
+        let mut acpi_entry = plist::Dictionary::new();
+        acpi_entry.insert("Enabled".into(), plist::Value::Boolean(true));
+        acpi_entry.insert("Path".into(), plist::Value::String("not-acpi.txt".into()));
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("ACPI")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert(
+                "Add".into(),
+                plist::Value::Array(vec![plist::Value::Dictionary(acpi_entry)]),
+            );
+
+        let mut tool_entry = plist::Dictionary::new();
+        tool_entry.insert("Enabled".into(), plist::Value::Boolean(true));
+        tool_entry.insert("Path".into(), plist::Value::String("not-a-tool.txt".into()));
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("Misc")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert(
+                "Tools".into(),
+                plist::Value::Array(vec![plist::Value::Dictionary(tool_entry)]),
+            );
+
+        let mut driver_entry = plist::Dictionary::new();
+        driver_entry.insert("Enabled".into(), plist::Value::String("true".into()));
+        driver_entry.insert(
+            "Path".into(),
+            plist::Value::String("OpenRuntime.efi".into()),
+        );
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("UEFI")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert(
+                "Drivers".into(),
+                plist::Value::Array(vec![plist::Value::Dictionary(driver_entry)]),
+            );
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+        let errors = validation.errors.join("；");
+
+        assert!(!validation.valid);
+        assert!(errors.contains("ACPI/Add") && errors.contains("扩展名"));
+        assert!(errors.contains("Misc/Tools") && errors.contains("扩展名"));
+        assert!(
+            errors.contains("UEFI/Drivers")
+                && errors.contains("Enabled")
+                && errors.contains("布尔")
+        );
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn warns_without_exposing_populated_smbios_identity_values() {
+        let source = test_root("populated-smbios-identity");
+        create_valid_efi(&source);
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        let mut generic = plist::Dictionary::new();
+        generic.insert(
+            "SystemSerialNumber".into(),
+            plist::Value::String("PRIVATE-SERIAL-MUST-NOT-LEAK".into()),
+        );
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("PlatformInfo")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert("Generic".into(), plist::Value::Dictionary(generic));
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+        let warnings = validation.warnings.join(" ");
+
+        assert!(validation.valid);
+        assert!(warnings.contains("SMBIOS 身份字段"));
+        assert!(!warnings.contains("PRIVATE-SERIAL-MUST-NOT-LEAK"));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_enabled_config_paths() {
+        let source = test_root("duplicate-config-path");
+        create_valid_efi(&source);
+        fs::write(source.join("EFI/OC/ACPI/SSDT-TEST.aml"), b"aml").unwrap();
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        let mut entry = plist::Dictionary::new();
+        entry.insert("Enabled".into(), plist::Value::Boolean(true));
+        entry.insert("Path".into(), plist::Value::String("SSDT-TEST.aml".into()));
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("ACPI")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert(
+                "Add".into(),
+                plist::Value::Array(vec![
+                    plist::Value::Dictionary(entry.clone()),
+                    plist::Value::Dictionary(entry),
+                ]),
+            );
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("重复启用") && error.contains("SSDT-TEST.aml")));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn rejects_enabled_acpi_and_driver_paths_with_the_wrong_file_type() {
+        let source = test_root("wrong-enabled-path-type");
+        create_valid_efi(&source);
+        fs::create_dir_all(source.join("EFI/OC/ACPI/Directory.aml")).unwrap();
+        fs::create_dir_all(source.join("EFI/OC/Drivers/Directory.efi")).unwrap();
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        for (section, path) in [("ACPI", "Directory.aml"), ("UEFI", "Directory.efi")] {
+            let mut entry = plist::Dictionary::new();
+            entry.insert("Enabled".into(), plist::Value::Boolean(true));
+            entry.insert("Path".into(), plist::Value::String(path.into()));
+            let subsection = if section == "ACPI" { "Add" } else { "Drivers" };
+            config
+                .as_dictionary_mut()
+                .unwrap()
+                .get_mut(section)
+                .and_then(plist::Value::as_dictionary_mut)
+                .unwrap()
+                .insert(
+                    subsection.into(),
+                    plist::Value::Array(vec![plist::Value::Dictionary(entry)]),
+                );
+        }
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("Directory.aml") && error.contains("普通文件")));
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("Directory.efi") && error.contains("普通文件")));
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn rejects_enabled_kext_without_a_plist_path() {
+        let source = test_root("missing-kext-plist-path");
+        create_valid_efi(&source);
+        fs::create_dir_all(source.join("EFI/OC/Kexts/Demo.kext/Contents")).unwrap();
+        let config_path = source.join("EFI/OC/config.plist");
+        let mut config = plist::Value::from_file(&config_path).unwrap();
+        let mut entry = plist::Dictionary::new();
+        entry.insert("Enabled".into(), plist::Value::Boolean(true));
+        entry.insert(
+            "BundlePath".into(),
+            plist::Value::String("Demo.kext".into()),
+        );
+        entry.insert("ExecutablePath".into(), plist::Value::String(String::new()));
+        config
+            .as_dictionary_mut()
+            .unwrap()
+            .get_mut("Kernel")
+            .and_then(plist::Value::as_dictionary_mut)
+            .unwrap()
+            .insert(
+                "Add".into(),
+                plist::Value::Array(vec![plist::Value::Dictionary(entry)]),
+            );
+        config.to_file_xml(&config_path).unwrap();
+
+        let validation = validate_efi_root(&source).unwrap();
+
+        assert!(!validation.valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("PlistPath")));
         fs::remove_dir_all(source).unwrap();
     }
 
@@ -2679,6 +3683,7 @@ mod tests {
         let manifest = EfiBuildManifest {
             schema_version: 1,
             target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
             profile: "amd-zen-desktop".into(),
             platform: "amd-zen".into(),
             cpu_core_count: 6,
@@ -2698,7 +3703,8 @@ mod tests {
 
         let result = build_scaffold(&parent, &manifest, None).unwrap();
         let output = PathBuf::from(&result.output_path);
-        assert!(result.ready_for_install);
+        assert!(result.ready_for_copy);
+        assert_ready_candidate_export_is_clean(&output);
         assert!(output.join("EFI/OC/config.plist").is_file());
         assert!(output
             .join("EFI/OC/ACPI/SSDT-EC-USBX-DESKTOP.aml")
@@ -2809,6 +3815,7 @@ mod tests {
         let manifest = EfiBuildManifest {
             schema_version: 1,
             target_mac_os: "14".into(),
+            trace: test_manifest_trace(),
             profile: "amd-zen-B550-desktop".into(),
             platform: "amd-zen".into(),
             cpu_core_count: 8,
@@ -2828,7 +3835,8 @@ mod tests {
 
         let result = build_scaffold(&parent, &manifest, None).unwrap();
         let output = PathBuf::from(&result.output_path);
-        assert!(result.ready_for_install);
+        assert!(result.ready_for_copy);
+        assert_ready_candidate_export_is_clean(&output);
         assert!(output.join("EFI/OC/ACPI/SSDT-CPUR.aml").is_file());
         let validation = validate_efi_root(&output).unwrap();
         assert!(validation.valid, "{:?}", validation.errors);
@@ -2909,6 +3917,7 @@ mod tests {
             let manifest = EfiBuildManifest {
                 schema_version: 1,
                 target_mac_os: "14".into(),
+                trace: test_manifest_trace(),
                 profile: format!("{platform}-{chipset}-desktop"),
                 platform: platform.into(),
                 cpu_core_count: 8,
@@ -2927,7 +3936,8 @@ mod tests {
             validate_manifest_lock(&manifest).unwrap();
             let result = build_scaffold(&parent, &manifest, None).unwrap();
             let output = PathBuf::from(result.output_path);
-            assert!(result.ready_for_install);
+            assert!(result.ready_for_copy);
+            assert_ready_candidate_export_is_clean(&output);
             let validation = validate_efi_root(&output).unwrap();
             assert!(validation.valid, "{:?}", validation.errors);
             assert!(output

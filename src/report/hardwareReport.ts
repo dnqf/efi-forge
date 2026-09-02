@@ -14,16 +14,23 @@ function objectAt(value: unknown, path: string): JsonObject {
   return value as JsonObject;
 }
 
-function stringAt(value: unknown, path: string, allowEmpty = false): string {
+function stringAt(value: unknown, path: string, allowEmpty = false, maximum = 512): string {
   if (typeof value !== "string" || (!allowEmpty && value.trim().length === 0)) {
     throw new Error(`${path} 必须是${allowEmpty ? "字符串" : "非空字符串"}。`);
   }
-  return value.trim();
+  const normalized = value.trim();
+  if (
+    normalized.length > maximum
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(normalized)
+  ) {
+    throw new Error(`${path} 包含控制字符或内容过长。`);
+  }
+  return normalized;
 }
 
-function optionalStringAt(value: unknown, path: string): string | undefined {
+function optionalStringAt(value: unknown, path: string, maximum = 512): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
-  return stringAt(value, path);
+  return stringAt(value, path, false, maximum);
 }
 
 function machineTypeAt(value: unknown, path: string): string | undefined {
@@ -34,9 +41,14 @@ function machineTypeAt(value: unknown, path: string): string | undefined {
   return machineType;
 }
 
-function integerAt(value: unknown, path: string, minimum = 0): number {
-  if (!Number.isInteger(value) || (value as number) < minimum) {
-    throw new Error(`${path} 必须是大于或等于 ${minimum} 的整数。`);
+function integerAt(
+  value: unknown,
+  path: string,
+  minimum = 0,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new Error(`${path} 必须是 ${minimum} 到 ${maximum} 之间的整数。`);
   }
   return value as number;
 }
@@ -55,7 +67,9 @@ function enumAt<T extends string>(value: unknown, options: readonly T[], path: s
 
 function stringArrayAt(value: unknown, path: string): string[] {
   if (!Array.isArray(value)) throw new Error(`${path} 必须是字符串数组。`);
-  return value.map((item, index) => stringAt(item, `${path}[${index}]`));
+  if (value.length > 64) throw new Error(`${path} 最多包含 64 项。`);
+  const strings = value.map((item, index) => stringAt(item, `${path}[${index}]`, false, 128));
+  return [...new Set(strings)];
 }
 
 function pciIdAt(value: unknown, path: string): string {
@@ -87,7 +101,17 @@ function classCodeAt(value: unknown, path: string): string | undefined {
 function biosDateAt(value: unknown, path: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const date = stringAt(value, path);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parsed = match
+    ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+    : null;
+  if (
+    !match
+    || !parsed
+    || parsed.getUTCFullYear() !== Number(match[1])
+    || parsed.getUTCMonth() !== Number(match[2]) - 1
+    || parsed.getUTCDate() !== Number(match[3])
+  ) {
     throw new Error(`${path} 必须是 YYYY-MM-DD 日期。`);
   }
   return date;
@@ -95,11 +119,17 @@ function biosDateAt(value: unknown, path: string): string | undefined {
 
 function pciDevicesAt(value: unknown, path: string): PciDevice[] {
   if (!Array.isArray(value)) throw new Error(`${path} 必须是设备数组。`);
+  if (value.length > 256) throw new Error(`${path} 最多包含 256 个设备。`);
+
+  const ids = new Set<string>();
 
   return value.map((item, index) => {
     const device = objectAt(item, `${path}[${index}]`);
+    const id = stringAt(device.id, `${path}[${index}].id`, false, 128);
+    if (ids.has(id)) throw new Error(`${path} 包含重复设备 ID：${id}。`);
+    ids.add(id);
     return {
-      id: stringAt(device.id, `${path}[${index}].id`),
+      id,
       name: stringAt(device.name, `${path}[${index}].name`),
       vendorId: pciIdAt(device.vendorId, `${path}[${index}].vendorId`),
       deviceId: pciIdAt(device.deviceId, `${path}[${index}].deviceId`),
@@ -117,12 +147,19 @@ export function parseHardwareReport(value: unknown): HardwareReport {
   const root = objectAt(value, "硬件报告");
   if (root.schemaVersion !== 1) throw new Error("只支持 schemaVersion 为 1 的硬件报告。");
 
-  const capturedAt = stringAt(root.capturedAt, "capturedAt");
-  if (Number.isNaN(Date.parse(capturedAt))) throw new Error("capturedAt 必须是有效日期时间。");
+  const capturedAt = stringAt(root.capturedAt, "capturedAt", false, 64);
+  const capturedTime = Date.parse(capturedAt);
+  if (!Number.isFinite(capturedTime) || capturedTime > Date.now() + 24 * 60 * 60 * 1000) {
+    throw new Error("capturedAt 必须是有效且没有明显晚于当前时间的日期时间。");
+  }
 
   const system = objectAt(root.system, "system");
   const cpu = objectAt(root.cpu, "cpu");
   const board = objectAt(root.board, "board");
+
+  const cores = integerAt(cpu.cores, "cpu.cores", 1, 1024);
+  const threads = integerAt(cpu.threads, "cpu.threads", 1, 4096);
+  if (threads < cores) throw new Error("CPU 线程数不能小于核心数。");
 
   return {
     schemaVersion: 1,
@@ -131,24 +168,24 @@ export function parseHardwareReport(value: unknown): HardwareReport {
       kind: enumAt(system.kind, reportKinds, "system.kind"),
       firmware: enumAt(system.firmware, firmwareKinds, "system.firmware"),
       secureBoot: booleanAt(system.secureBoot, "system.secureBoot"),
-      manufacturer: optionalStringAt(system.manufacturer, "system.manufacturer"),
-      productName: optionalStringAt(system.productName, "system.productName"),
+      manufacturer: optionalStringAt(system.manufacturer, "system.manufacturer", 256),
+      productName: optionalStringAt(system.productName, "system.productName", 256),
       machineType: machineTypeAt(system.machineType, "system.machineType"),
     },
     cpu: {
       vendor: enumAt(cpu.vendor, cpuVendors, "cpu.vendor"),
-      name: stringAt(cpu.name, "cpu.name"),
-      generation: stringAt(cpu.generation, "cpu.generation"),
-      family: integerAt(cpu.family, "cpu.family"),
-      model: integerAt(cpu.model, "cpu.model"),
-      cores: integerAt(cpu.cores, "cpu.cores", 1),
-      threads: integerAt(cpu.threads, "cpu.threads", 1),
+      name: stringAt(cpu.name, "cpu.name", false, 256),
+      generation: stringAt(cpu.generation, "cpu.generation", false, 64),
+      family: integerAt(cpu.family, "cpu.family", 0, 65_535),
+      model: integerAt(cpu.model, "cpu.model", 0, 65_535),
+      cores,
+      threads,
       features: stringArrayAt(cpu.features, "cpu.features"),
     },
     board: {
-      vendor: stringAt(board.vendor, "board.vendor"),
-      model: stringAt(board.model, "board.model"),
-      biosVersion: stringAt(board.biosVersion, "board.biosVersion", true),
+      vendor: stringAt(board.vendor, "board.vendor", false, 256),
+      model: stringAt(board.model, "board.model", false, 256),
+      biosVersion: stringAt(board.biosVersion, "board.biosVersion", true, 256),
       biosDate: biosDateAt(board.biosDate, "board.biosDate"),
     },
     gpus: pciDevicesAt(root.gpus, "gpus"),
@@ -167,6 +204,8 @@ export function hardwareReportFileName(report: HardwareReport): string {
     .replace(/[^a-z0-9_-]+/gi, "-")
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .toLowerCase();
+    .toLowerCase()
+    .slice(0, 96)
+    .replace(/-+$/g, "");
   return `efi-forge-report-${machine || "machine"}.json`;
 }

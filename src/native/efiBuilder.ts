@@ -5,7 +5,7 @@ export interface ScaffoldResult {
   outputPath: string;
   filesWritten: number;
   warnings: string[];
-  readyForInstall: boolean;
+  readyForCopy: boolean;
   validationLevel: "ocvalidate-passed" | "components-only";
   configSha256: string | null;
 }
@@ -19,7 +19,7 @@ export interface EfiValidationResult {
   configSha256: string | null;
 }
 
-export interface InstallCopyResult {
+export interface SafeCopyResult {
   targetPath: string;
   filesCopied: number;
 }
@@ -164,8 +164,8 @@ export function mergeComponentSelections(
 
 export function copyEfiToEmptyTarget(
   sourceRoot: string,
-): Promise<InstallCopyResult | null> {
-  return invoke<InstallCopyResult | null>("copy_efi_to_empty_target", {
+): Promise<SafeCopyResult | null> {
+  return invoke<SafeCopyResult | null>("copy_efi_to_empty_target", {
     sourceRoot,
   });
 }

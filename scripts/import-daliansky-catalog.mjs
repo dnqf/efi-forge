@@ -48,6 +48,18 @@ function repositoryRoot(url) {
   return `https://github.com/${owner}/${cleanRepository}`;
 }
 
+function hasExplicitRejectionSignal(value) {
+  return /(?:DONT|DO[\s_-]*NOT)[\s_-]*USE(?:[\s_-]*THIS)?/i.test(value);
+}
+
+function isUsableRepository(url) {
+  const parsed = new URL(url);
+  const [owner = "", repository = ""] = parsed.pathname.split("/").filter(Boolean);
+  return owner.toLowerCase() !== "suggested-username"
+    && repository !== "-"
+    && !hasExplicitRejectionSignal(`${owner}/${repository}`);
+}
+
 function bootloaderHint(text) {
   const hasOpenCore = /open\s*core|\boc\b/i.test(text);
   const hasClover = /clover/i.test(text);
@@ -134,13 +146,14 @@ export function parseDalianskyCatalog(markdown, revision) {
 
     const model = plainText(cells[0]);
     if (!model || /机型名称|笔记本|台式|发布地址|^-+$/.test(model)) continue;
+    if (hasExplicitRejectionSignal(model)) continue;
 
     const releaseCell = cells[1] ?? "";
     const guideCell = cells[2] ?? "";
     const remaining = cells.slice(3).join(" / ");
     const repositories = githubUrls(releaseCell)
       .map(repositoryRoot)
-      .filter((url) => url !== null);
+      .filter((url) => url !== null && isUsableRepository(url));
     if (repositories.length === 0) continue;
 
     const guides = githubUrls(guideCell).filter((url) => repositoryRoot(url) !== url);

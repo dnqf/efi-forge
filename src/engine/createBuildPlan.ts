@@ -162,10 +162,18 @@ export function createBuildPlan(
   }
   const supportedAmdChipset = isAmdZen && amdAutoChipsets.includes(chipset);
   const supportedIntelChipset = reviewedIntelClockPath;
+  const tahoeManualOnly = report.targetMacOS === "26";
   const autoConfigSupported =
     hardware.system.kind === "desktop" &&
     hardware.system.firmware === "uefi" &&
+    !tahoeManualOnly &&
     (supportedAmdChipset || (supportedIntelChipset && intelClockMode === "awac"));
+
+  if (tahoeManualOnly) {
+    notes.push(
+      "macOS Tahoe 26 当前只开放手动研究路径：不会自动生成 config.plist；模拟音频、WhateverGreen、无线与 SMBIOS 必须按官方 Tahoe 说明复核。",
+    );
+  }
 
   if ((isCoffee || isComet) && !supportedIntelChipset) {
     notes.push(`主板芯片组 ${chipset} 尚不能可靠决定 AWAC/RTC/PMC 组合，因此保留导出但不自动生成 config.plist。`);

@@ -1,7 +1,7 @@
 {
   "name": "efi-forge",
   "private": true,
-  "version": "0.1.10",
+  "version": "0.1.11",
   "homepage": "https://github.com/dnqf/efi-forge",
   "repository": {
     "type": "git",

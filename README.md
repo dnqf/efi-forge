@@ -4,6 +4,8 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 
 当前公开测试版为 `v0.1.10 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
 
+`main` 分支正在准备 `v0.1.11` 开发候选；它不等于已发布安装包，下载用户仍应以上述 Release 页的公开版本为准。
+
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
 ## 下载
@@ -52,7 +54,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 2. **看懂兼容风险**：先看“需要关注”摘要，再核对 CPU、显卡、网络、存储、BIOS 和 ACPI 细节。信息不足或可能不兼容只降低可信度，不会阻止继续。
 3. **选择 EFI 起点**：普通用户优先选择 A 路径生成项目候选；已有专属 EFI 的用户可选择 B 路径进行只读检查。个人组件与双 EFI 融合位于高级选项中。
 4. **完成结构校验**：只有目录结构、组件引用、锁定组件完整性和适用的 `ocvalidate` 检查通过后，才能进入复制步骤。通过不等于真机可启动。
-5. **复制并启动测试**：只复制到用户选择的空目录；工具不格式化、不分区、不覆盖文件，也不制作完整 macOS 安装盘。随后应使用独立介质测试 OpenCore 和 Recovery。
+5. **复制并启动测试**：普通空文件夹只能作为导出或备份。如需启动，先自行准备并挂载独立 U 盘的 FAT32 EFI 分区，再选择其空根目录。工具不格式化、不分区、不覆盖文件，也不制作完整 macOS 安装盘。
 
 ## 本地运行
 
@@ -104,6 +106,8 @@ npm run desktop:build
 - 不分发万能 EFI
 - 不生成或上传公共 SMBIOS 身份
 - 当前版本不格式化或分区；只允许向用户选择的空目录或空挂载点复制
+- 复制过程再次限制目录深度、条目数和总容量，并在提交到目标前重新验证暂存 EFI
+- 生成期间使用的 `macserial.exe` 和 `ocvalidate.exe` 不会保留在最终导出目录
 - 组件只从锁文件中的固定上游地址下载，大小与 SHA-256 不匹配时停止
 - 社区机型索引只保存机型文字、GitHub 仓库入口和固定来源提交，不复制、不执行、不自动下载第三方 EFI；来源仓库未声明许可证时保持“仅发现线索”状态
 - 原生扫描器只执行仓库内固定的 PowerShell/CIM 查询，不接收外部命令文本
@@ -114,4 +118,4 @@ npm run desktop:build
 - 单独组件默认不会修改 `config.plist`；只有逐项明确选择启用才会写入最小条目，并使用锁定 OpenCore 包中的同版本 `ocvalidate` 校验
 - 受控写入不会修改 `PlatformInfo`、`DeviceProperties`、NVRAM、Kernel Patch、Emulate 或 Quirks；受保护区域变化即停止
 
-详细范围见 [ThinkPad 专项范围](docs/THINKPAD_SUPPORT.zh-CN.md)、[daliansky 目录补充实现提示词](docs/CODEX_DALIANSKY_CATALOG_SUPPLEMENT_PROMPT.zh-CN.md)、[产品需求文档](docs/PRD.zh-CN.md)、[验证流程](docs/VALIDATION_WORKFLOW.zh-CN.md)、[候选版本发布流程](docs/RELEASE_PROCESS.zh-CN.md)、[参与贡献](CONTRIBUTING.md)、[阶段 2–6 进度报告](docs/STAGES_2_6_PROGRESS_REPORT.zh-CN.md) 和 [工程实现提示词](docs/ENGINEERING_PROMPT.zh-CN.md)。
+详细范围见 [v0.1.11 候选说明](docs/RELEASE_NOTES_v0.1.11.zh-CN.md)、[v0.1.11 深度审计](docs/V0.1.11_DEEP_AUDIT_REPORT.zh-CN.md)、[v0.1.11 多视角复核](docs/V0.1.11_MULTI_PERSPECTIVE_AUDIT.zh-CN.md)、[隐私说明](PRIVACY.md)、[ThinkPad 专项范围](docs/THINKPAD_SUPPORT.zh-CN.md)、[daliansky 目录补充实现提示词](docs/CODEX_DALIANSKY_CATALOG_SUPPLEMENT_PROMPT.zh-CN.md)、[产品需求文档](docs/PRD.zh-CN.md)、[验证流程](docs/VALIDATION_WORKFLOW.zh-CN.md)、[候选版本发布流程](docs/RELEASE_PROCESS.zh-CN.md)、[参与贡献](CONTRIBUTING.md)、[阶段 2–6 进度报告](docs/STAGES_2_6_PROGRESS_REPORT.zh-CN.md) 和 [工程实现提示词](docs/ENGINEERING_PROMPT.zh-CN.md)。
