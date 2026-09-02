@@ -2,21 +2,22 @@
 
 EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工作台。它通过硬件扫描、可追溯的兼容性规则和固定版本的可信上游组件，为目标电脑生成候选 EFI 构建计划。
 
-当前公开测试版为 `v0.1.10 alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
+当前公开测试版为 `v0.1.12 Alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据、转移/求助摘要和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
 
-`main` 分支正在准备 `v0.1.12` Alpha 候选；它不等于已发布安装包，下载用户仍应以上述 Release 页的公开版本为准。
+`v0.1.12` 是预发布测试版，不代表任意硬件可以安装成功；下载、哈希和已知边界以 Release 页为准。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
 ## 下载
 
-- 版本说明：[EFI Forge v0.1.10 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)
-- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.10/EFI-Forge_0.1.10_x64-setup.exe)
-- 历史版本：[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)、[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
+- 版本说明：[EFI Forge v0.1.12 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.12)
+- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/EFI.Forge_0.1.12_x64-setup.exe)
+- 校验文件：[SHA256SUMS.txt](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/SHA256SUMS.txt)
+- 历史版本：[v0.1.10](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)、[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)、[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
 
 不要使用来源不明的 GitHub 加速站。安装后仍应核对安装程序哈希；当前 Alpha 尚未数字签名，Windows 可能显示未知发布者。
 
-- EXE SHA-256：`8D0FA9D12586183AFEB99738CF5CE4E5DEE19308E2AF6D13B3FE0F2CC5CF9BE7`
+- EXE SHA-256：`C1F64E886B376A1DC1F9298D0ED06DA2703300C1E85FE5BAB73ED3A1F46F386A`
 
 ## 当前能力
 
@@ -43,6 +44,9 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 - 可选择“项目生成 EFI 优先”或“用户 EFI 优先”，在新目录融合两份完整 EFI；同名冲突保留主来源，缺失文件才补入
 - 补入但没有被主 `config.plist` 引用的 ACPI、Kext 和 Driver 会标为“仅保留、未启用”，不会静默加载
 - 将现代 UEFI、旧平台手动 UEFI、Legacy/OpenDuet 和 CPU 指令集风险拆分为独立路径
+- 在完整 EFI 校验与复制前拒绝 Windows/FAT32 保留名称、不安全字符和大小写碰撞
+- 失败时区分网络、组件完整性、EFI 结构、目标位置和文件权限，并给出不绕过安全门禁的恢复动作
+- 可导出不包含本机路径、序列号或网络凭据的转移/求助摘要，方便在另一台电脑继续验证
 - 社区条目与真机验证证据具备固定 commit、安全审核门和精确硬件/BIOS/config 哈希绑定校验
 - 项目生成或受控组件 EFI 会计算真实 `config.plist` SHA-256；用户可记录 Picker、Recovery、安装、桌面与外设观察项，导出并回导精确绑定的脱敏验证证据
 - 固定硬件回归矩阵包含 ThinkPad T430/T480/T490、常见 Z390/Z490、ASUS Z490、Dell OptiPlex 与高风险 NVIDIA/PM981 组合；矩阵验证规则决策，不等于这些机器已完成真机安装
