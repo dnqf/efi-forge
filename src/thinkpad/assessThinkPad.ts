@@ -79,7 +79,9 @@ export function assessThinkPad(
   const tier = determineTier(report, targetMacOS, profile);
   const hasIntelGpu = report.gpus.some((device) => device.vendorId === "8086");
   const discreteGpus = report.gpus.filter((device) => device.vendorId === "10DE" || device.vendorId === "1002");
-  const riskyStorage = report.storage.filter((device) => /PM981|PM991|MICRON 2200/i.test(device.name));
+  const riskyStorage = report.storage.filter((device) =>
+    /PM981|PM991|MICRON 2200|2200S|SK\s+HYNIX\s+PC711|HYNIX\s+PC711|OPTANE|3D\s+XPOINT/i.test(device.name),
+  );
   const generationMatches = profile?.cpuGenerations.includes(report.cpu.generation) ?? false;
   const checks: ThinkPadVariantCheck[] = [
     {

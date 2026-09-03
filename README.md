@@ -6,7 +6,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 
 `v0.1.12` 是预发布测试版，不代表任意硬件可以安装成功；下载、哈希和已知边界以 Release 页为准。
 
-`main` 分支正在准备 `v0.1.13 Alpha`：新增 Hardware Evidence 2.0 报告与控制器证据账本，但不会因此扩大未审核自动 EFI 范围。公开安装包在发布验收完成前仍以 v0.1.12 为准。
+`main` 分支包含 Hardware Evidence 2.0 报告与控制器证据账本，但不会因此扩大未审核自动 EFI 范围。公开安装包须以 v0.1.13 Release 的实际发布状态为准。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
@@ -15,6 +15,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 - 版本说明：[EFI Forge v0.1.12 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.12)
 - Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/EFI.Forge_0.1.12_x64-setup.exe)
 - 校验文件：[SHA256SUMS.txt](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/SHA256SUMS.txt)
+- 正在开发：`main` 分支为 v0.1.13 候选，尚未作为 GitHub Release 公开下载。
 - 历史版本：[v0.1.10](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)、[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)、[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
 
 不要使用来源不明的 GitHub 加速站。安装后仍应核对安装程序哈希；当前 Alpha 尚未数字签名，Windows 可能显示未知发布者。
@@ -124,4 +125,4 @@ npm run desktop:build
 - 单独组件默认不会修改 `config.plist`；只有逐项明确选择启用才会写入最小条目，并使用锁定 OpenCore 包中的同版本 `ocvalidate` 校验
 - 受控写入不会修改 `PlatformInfo`、`DeviceProperties`、NVRAM、Kernel Patch、Emulate 或 Quirks；受保护区域变化即停止
 
-详细范围见 [v0.1.13 候选说明](docs/RELEASE_NOTES_v0.1.13.zh-CN.md)、[Hardware Evidence 2.0 实施提示词](docs/CODEX_HARDWARE_EVIDENCE_2_PROMPT.zh-CN.md)、[v0.1.12 多角度审计](docs/V0.1.12_MULTI_ANGLE_AUDIT.zh-CN.md)、[v0.1.11 深度审计](docs/V0.1.11_DEEP_AUDIT_REPORT.zh-CN.md)、[隐私说明](PRIVACY.md)、[ThinkPad 专项范围](docs/THINKPAD_SUPPORT.zh-CN.md)、[daliansky 目录补充实现提示词](docs/CODEX_DALIANSKY_CATALOG_SUPPLEMENT_PROMPT.zh-CN.md)、[产品需求文档](docs/PRD.zh-CN.md)、[验证流程](docs/VALIDATION_WORKFLOW.zh-CN.md)、[候选版本发布流程](docs/RELEASE_PROCESS.zh-CN.md)、[参与贡献](CONTRIBUTING.md)、[阶段 2–6 进度报告](docs/STAGES_2_6_PROGRESS_REPORT.zh-CN.md) 和 [工程实现提示词](docs/ENGINEERING_PROMPT.zh-CN.md)。
+详细范围见 [v0.1.13 候选说明](docs/RELEASE_NOTES_v0.1.13.zh-CN.md)、[v0.1.13 Hardware Evidence 2.0 审计记录](docs/V0.1.13_HARDWARE_EVIDENCE_AUDIT.zh-CN.md)、[Hardware Evidence 2.0 实施提示词](docs/CODEX_HARDWARE_EVIDENCE_2_PROMPT.zh-CN.md)、[v0.1.12 多角度审计](docs/V0.1.12_MULTI_ANGLE_AUDIT.zh-CN.md)、[v0.1.11 深度审计](docs/V0.1.11_DEEP_AUDIT_REPORT.zh-CN.md)、[隐私说明](PRIVACY.md)、[ThinkPad 专项范围](docs/THINKPAD_SUPPORT.zh-CN.md)、[daliansky 目录补充实现提示词](docs/CODEX_DALIANSKY_CATALOG_SUPPLEMENT_PROMPT.zh-CN.md)、[产品需求文档](docs/PRD.zh-CN.md)、[验证流程](docs/VALIDATION_WORKFLOW.zh-CN.md)、[候选版本发布流程](docs/RELEASE_PROCESS.zh-CN.md)、[参与贡献](CONTRIBUTING.md)、[阶段 2–6 进度报告](docs/STAGES_2_6_PROGRESS_REPORT.zh-CN.md) 和 [工程实现提示词](docs/ENGINEERING_PROMPT.zh-CN.md)。

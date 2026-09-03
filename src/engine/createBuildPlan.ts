@@ -167,6 +167,10 @@ export function createBuildPlan(
     notes.push("检测到可用 UHD 630 与明确不受支持的独显，将默认禁用独显并由核显输出。 ");
   } else if (blockedExternalGpu && preferences.unsupportedGpuMode === "preserve") {
     notes.push("已按用户选择保留全部显卡；不会自动加入禁用独显参数，已有 SSDT/DeviceProperties 需由用户自行核对。");
+  } else if (blockedExternalGpu && supportedExternalGpu) {
+    notes.push(
+      "同时检测到可用与明确不兼容的独显；不会加入全局 -wegnoegpu，因为它也会禁用可用独显。请使用设备级 SSDT/DeviceProperties 或用户已有方案逐卡处理。",
+    );
   }
   const supportedAmdChipset = isAmdZen && amdAutoChipsets.includes(chipset);
   const supportedIntelChipset = reviewedIntelClockPath;

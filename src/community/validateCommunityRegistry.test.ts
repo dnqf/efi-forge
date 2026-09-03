@@ -77,4 +77,19 @@ describe("community profile admission", () => {
       ]),
     );
   });
+
+  it("rejects impossible calendar dates even when their shape is valid", () => {
+    const invalid = {
+      ...completeProfile,
+      lastVerified: "2026-02-30",
+      audit: { ...completeProfile.audit, reviewedAt: "2026-13-01" },
+    };
+
+    expect(validateCommunityRegistry([invalid]).map((issue) => issue.message)).toEqual(
+      expect.arrayContaining([
+        "最后验证日期格式无效。",
+        "安全审核日期格式无效。",
+      ]),
+    );
+  });
 });

@@ -66,6 +66,74 @@ describe("EFI build manifest", () => {
     expect(first?.hardwareKey).toContain("direct-pci");
   });
 
+  it("binds schema v2 manifests to firmware, controller and laptop evidence", () => {
+    const firstHardware = {
+      ...sampleHardware,
+      schemaVersion: 2 as const,
+      evidence: {
+        storageMode: "raid-vmd" as const,
+        chipset: {
+          id: "chipset-0",
+          name: "Intel Z490 LPC Controller",
+          vendorId: "8086",
+          deviceId: "0685",
+        },
+        storageControllers: [{
+          id: "storage-controller-0",
+          name: "Intel VMD Controller",
+          vendorId: "8086",
+          deviceId: "9A0B",
+          classCode: "010400",
+        }],
+        usbControllers: [],
+        thunderboltControllers: [],
+        bluetooth: [],
+        inputControllers: [],
+        laptop: {
+          batteryDetected: false,
+          i2cDetected: false,
+          ps2Detected: false,
+          intelSstDetected: false,
+          cameraDetected: false,
+          fingerprintDetected: false,
+          cardReaderDetected: false,
+        },
+      },
+    };
+    const secondHardware = {
+      ...firstHardware,
+      system: { ...firstHardware.system, secureBoot: true },
+      evidence: {
+        ...firstHardware.evidence,
+        storageMode: "ahci" as const,
+        storageControllers: [{
+          ...firstHardware.evidence.storageControllers[0],
+          deviceId: "A282",
+        }],
+      },
+    };
+    const firstCompatibility = evaluateCompatibility(firstHardware, "14", compatibilityRules);
+    const secondCompatibility = evaluateCompatibility(secondHardware, "14", compatibilityRules);
+    const first = createEfiManifest(
+      firstHardware,
+      "14",
+      firstCompatibility,
+      createBuildPlan(firstHardware, firstCompatibility),
+    );
+    const second = createEfiManifest(
+      secondHardware,
+      "14",
+      secondCompatibility,
+      createBuildPlan(secondHardware, secondCompatibility),
+    );
+
+    expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
+    expect(first?.hardwareKey).toContain("storage-mode:raid-vmd");
+    expect(first?.hardwareKey).toContain("storage-controller-0");
+    expect(first?.hardwareKey).toContain("secure-boot:false");
+    expect(second?.hardwareKey).toContain("secure-boot:true");
+  });
+
   it("exports high-risk hardware as a warned experimental manifest", () => {
     const compatibility = evaluateCompatibility(blockedHardware, "14", compatibilityRules);
     const plan = createBuildPlan(blockedHardware, compatibility);

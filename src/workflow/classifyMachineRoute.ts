@@ -26,11 +26,18 @@ const legacyGenerations = new Set([
 
 export function classifyMachineRoute(report: HardwareReport): MachineRoute {
   const identity = `${report.system.manufacturer ?? ""} ${report.system.productName ?? ""} ${report.board.vendor} ${report.board.model}`;
-  if (report.system.firmware === "legacy" || legacyGenerations.has(report.cpu.generation)) {
-    return { id: "legacy", label: "旧平台研究", guidance: "保持手动 EFI、旧系统/OCLP 与独立恢复盘路径。" };
-  }
+  const legacy = report.system.firmware === "legacy" || legacyGenerations.has(report.cpu.generation);
   if (/thinkpad/i.test(identity)) {
-    return { id: "thinkpad", label: "ThinkPad 专项", guidance: "优先使用四位 Machine Type、BIOS 与变体模块核对。" };
+    return {
+      id: "thinkpad",
+      label: legacy ? "ThinkPad 旧平台专项" : "ThinkPad 专项",
+      guidance: legacy
+        ? "先按四位 Machine Type、BIOS 与变体模块核对，再叠加旧系统/OCLP 和独立恢复盘路径。"
+        : "优先使用四位 Machine Type、BIOS 与变体模块核对。",
+    };
+  }
+  if (legacy) {
+    return { id: "legacy", label: "旧平台研究", guidance: "保持手动 EFI、旧系统/OCLP 与独立恢复盘路径。" };
   }
   if (/xeon|threadripper|workstation|precision|thinkstation|\bhp\s+z[248]\d{2}\b/i.test(`${report.cpu.name} ${identity}`)) {
     return { id: "workstation", label: "工作站 / HEDT", guidance: "人工核对多 GPU、PCIe 拓扑、内存映射和 USB/雷电。" };

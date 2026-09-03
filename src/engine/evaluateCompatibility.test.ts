@@ -167,6 +167,27 @@ describe("compatibility engine", () => {
     );
   });
 
+  it("keeps missing device categories visible in coverage without blocking user choice", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [],
+      network: [],
+      audio: [],
+      storage: [],
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subjectId: "gpu-missing", status: "blocked" }),
+      expect.objectContaining({ subjectId: "network-missing", status: "unknown" }),
+      expect.objectContaining({ subjectId: "audio-missing", status: "unknown" }),
+      expect.objectContaining({ subjectId: "storage-missing", status: "unknown" }),
+    ]));
+    expect(report.coverage).toBeLessThan(100);
+    expect(report.canContinue).toBe(true);
+    expect(report.recommended).toBe(false);
+  });
+
   it.each([
     ["NVIDIA GeForce GTX 1080", "1B80"],
     ["NVIDIA GeForce GT 710", "128B"],
@@ -555,6 +576,24 @@ describe("compatibility engine", () => {
     expect(plan?.components).toContain("WhateverGreen.kext");
     expect(plan?.bootArgs).not.toContain("-wegnoegpu");
     expect(plan?.bootArgs).not.toContain("agdpmod=pikera");
+  });
+
+  it("does not offer a global disable switch when supported and blocked external GPUs coexist", () => {
+    const hardware = {
+      ...sampleHardware,
+      gpus: [
+        { id: "gpu-rx580", name: "AMD Radeon RX 580", vendorId: "1002", deviceId: "67DF" },
+        { id: "gpu-rtx", name: "NVIDIA GeForce RTX 3070", vendorId: "10DE", deviceId: "2484" },
+      ],
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+    const plan = createBuildPlan(hardware, report);
+    const graphics = report.modules.find((module) => module.id === "graphics");
+
+    expect(graphics?.choices).toEqual([]);
+    expect(graphics?.summary).toContain("设备级人工方案");
+    expect(plan?.bootArgs).not.toContain("-wegnoegpu");
+    expect(plan?.notes.join(" ")).toContain("不会加入全局 -wegnoegpu");
   });
 
   it("distinguishes the unsupported RX 580 2048SP PCI ID", () => {

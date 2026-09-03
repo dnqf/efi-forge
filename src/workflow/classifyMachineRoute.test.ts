@@ -25,4 +25,28 @@ describe("machine strategy routing", () => {
     };
     expect(classifyMachineRoute(report).id).toBe(expected);
   });
+
+  it("keeps legacy ThinkPads in the model-specific route", () => {
+    const report = {
+      ...sampleHardware,
+      system: {
+        ...sampleHardware.system,
+        kind: "laptop" as const,
+        manufacturer: "LENOVO",
+        productName: "ThinkPad T430",
+        machineType: "2349",
+      },
+      cpu: {
+        ...sampleHardware.cpu,
+        name: "Intel Core i5-3320M",
+        generation: "ivy-bridge",
+      },
+      board: { ...sampleHardware.board, vendor: "LENOVO", model: "2349" },
+    };
+    const route = classifyMachineRoute(report);
+
+    expect(route.id).toBe("thinkpad");
+    expect(route.label).toContain("旧平台");
+    expect(route.guidance).toContain("OCLP");
+  });
 });

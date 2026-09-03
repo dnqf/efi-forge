@@ -21,17 +21,28 @@ function hardwareKey(report: HardwareReport): string {
   const deviceKey = (category: string, device: HardwareReport["gpus"][number]) =>
     [
       category,
+      device.id,
+      device.name,
       device.vendorId || "unknown",
       device.deviceId || "unknown",
       device.subsystemId ?? "unknown",
+      device.subsystemVendorId ?? "unknown",
+      device.subsystemDeviceId ?? "unknown",
+      device.revisionId ?? "unknown",
       device.classCode ?? "unknown",
+      device.parentVendorId ?? "unknown",
+      device.parentDeviceId ?? "unknown",
+      device.parentClassCode ?? "unknown",
       device.identitySource ?? "legacy-report",
     ].join(":");
   const deviceKeys = (category: string, devices: HardwareReport["gpus"]) =>
     devices.map((device) => deviceKey(category, device)).sort();
 
   return [
+    `schema:${report.schemaVersion}`,
     report.system.kind,
+    report.system.firmware,
+    `secure-boot:${report.system.secureBoot}`,
     report.system.manufacturer ?? "unknown",
     report.system.productName ?? "unknown",
     report.system.machineType ?? "unknown-machine-type",
@@ -40,6 +51,8 @@ function hardwareKey(report: HardwareReport): string {
     report.cpu.family,
     report.cpu.model,
     report.cpu.cores,
+    report.cpu.threads,
+    ...report.cpu.features.map((feature) => `cpu-feature:${feature}`).sort(),
     report.board.vendor,
     report.board.model,
     report.board.biosVersion || "unknown-bios",
@@ -48,6 +61,22 @@ function hardwareKey(report: HardwareReport): string {
     ...deviceKeys("network", report.network),
     ...deviceKeys("audio", report.audio),
     ...deviceKeys("storage", report.storage),
+    ...(report.evidence
+      ? [
+          `storage-mode:${report.evidence.storageMode}`,
+          ...(report.evidence.chipset
+            ? [deviceKey("chipset", report.evidence.chipset)]
+            : ["chipset:missing"]),
+          ...deviceKeys("storage-controller", report.evidence.storageControllers),
+          ...deviceKeys("usb-controller", report.evidence.usbControllers),
+          ...deviceKeys("thunderbolt-controller", report.evidence.thunderboltControllers),
+          ...deviceKeys("bluetooth", report.evidence.bluetooth),
+          ...deviceKeys("input-controller", report.evidence.inputControllers),
+          ...Object.entries(report.evidence.laptop)
+            .map(([name, present]) => `laptop:${name}:${present}`)
+            .sort(),
+        ]
+      : ["evidence:unavailable"]),
   ]
     .join("|")
     .toLowerCase();

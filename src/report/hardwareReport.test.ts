@@ -212,6 +212,19 @@ describe("hardware report interchange", () => {
     })).toThrow("重复设备 ID");
     expect(() => parseHardwareReport({
       ...sampleHardware,
+      network: [{ ...sampleHardware.network[0], id: sampleHardware.gpus[0].id }],
+    })).toThrow("跨分组重复设备 ID");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
+      gpus: [{
+        ...sampleHardware.gpus[0],
+        subsystemId: "12341043",
+        subsystemDeviceId: "5678",
+        subsystemVendorId: "1043",
+      }],
+    })).toThrow("Subsystem ID 与拆分后的设备/厂商 ID 不一致");
+    expect(() => parseHardwareReport({
+      ...sampleHardware,
       network: Array.from({ length: 257 }, (_, index) => ({
         id: `network-${index}`,
         name: `Network ${index}`,

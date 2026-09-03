@@ -83,16 +83,24 @@ function matchesSelector(subject: Subject, selector: RuleSelector): boolean {
 }
 
 function hardwareSubjects(report: HardwareReport): Subject[] {
+  const missingLabels = {
+    gpu: "未识别图形设备",
+    network: "未识别网络设备",
+    audio: "未识别音频设备",
+    storage: "未识别存储设备",
+  } as const;
   const pciSubjects = (
     category: "gpu" | "network" | "audio" | "storage",
     devices: PciDevice[],
   ): Subject[] =>
-    devices.map((device) => ({
-      id: device.id,
-      name: device.name,
-      category,
-      device,
-    }));
+    devices.length > 0
+      ? devices.map((device) => ({
+          id: device.id,
+          name: device.name,
+          category,
+          device,
+        }))
+      : [{ id: `${category}-missing`, name: missingLabels[category], category }];
 
   return [
     {

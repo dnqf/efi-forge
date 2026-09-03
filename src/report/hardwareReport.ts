@@ -138,7 +138,7 @@ function pciDevicesAt(value: unknown, path: string): PciDevice[] {
     const id = stringAt(device.id, `${path}[${index}].id`, false, 128);
     if (ids.has(id)) throw new Error(`${path} 包含重复设备 ID：${id}。`);
     ids.add(id);
-    return {
+    const parsed = {
       id,
       name: stringAt(device.name, `${path}[${index}].name`),
       vendorId: pciIdAt(device.vendorId, `${path}[${index}].vendorId`),
@@ -167,7 +167,29 @@ function pciDevicesAt(value: unknown, path: string): PciDevice[] {
           ? undefined
           : enumAt(device.identitySource, identitySources, `${path}[${index}].identitySource`),
     };
+    if (
+      parsed.subsystemId
+      && parsed.subsystemVendorId
+      && parsed.subsystemDeviceId
+      && parsed.subsystemId !== `${parsed.subsystemDeviceId}${parsed.subsystemVendorId}`
+    ) {
+      throw new Error(`${path}[${index}] 的 Subsystem ID 与拆分后的设备/厂商 ID 不一致。`);
+    }
+    return parsed;
   });
+}
+
+function assertUniqueDeviceIds(groups: { path: string; devices: PciDevice[] }[]): void {
+  const seen = new Map<string, string>();
+  for (const group of groups) {
+    for (const device of group.devices) {
+      const previous = seen.get(device.id);
+      if (previous) {
+        throw new Error(`硬件报告包含跨分组重复设备 ID：${device.id}（${previous} / ${group.path}）。`);
+      }
+      seen.set(device.id, group.path);
+    }
+  }
 }
 
 function hardwareEvidenceAt(value: unknown, path: string): HardwareEvidence {
@@ -220,7 +242,7 @@ export function parseHardwareReport(value: unknown): HardwareReport {
   const threads = integerAt(cpu.threads, "cpu.threads", 1, 4096);
   if (threads < cores) throw new Error("CPU 线程数不能小于核心数。");
 
-  return {
+  const report: HardwareReport = {
     schemaVersion: root.schemaVersion,
     capturedAt,
     system: {
@@ -255,6 +277,23 @@ export function parseHardwareReport(value: unknown): HardwareReport {
       ? hardwareEvidenceAt(root.evidence, "evidence")
       : undefined,
   };
+  assertUniqueDeviceIds([
+    { path: "gpus", devices: report.gpus },
+    { path: "network", devices: report.network },
+    { path: "audio", devices: report.audio },
+    { path: "storage", devices: report.storage },
+    ...(report.evidence
+      ? [
+          { path: "evidence.chipset", devices: report.evidence.chipset ? [report.evidence.chipset] : [] },
+          { path: "evidence.storageControllers", devices: report.evidence.storageControllers },
+          { path: "evidence.usbControllers", devices: report.evidence.usbControllers },
+          { path: "evidence.thunderboltControllers", devices: report.evidence.thunderboltControllers },
+          { path: "evidence.bluetooth", devices: report.evidence.bluetooth },
+          { path: "evidence.inputControllers", devices: report.evidence.inputControllers },
+        ]
+      : []),
+  ]);
+  return report;
 }
 
 export function serializeHardwareReport(report: HardwareReport): string {

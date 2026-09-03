@@ -367,6 +367,15 @@ function App() {
         configSha256: efiValidation.configSha256,
       }
     : null;
+  const verificationBindingKey = verificationBinding
+    ? [
+        verificationBinding.hardwareKey,
+        verificationBinding.biosVersion,
+        verificationBinding.targetMacOS,
+        verificationBinding.openCoreVersion,
+        verificationBinding.configSha256,
+      ].join("|")
+    : null;
   const verificationEligible = Boolean(
     verificationBinding
       && (scanSource === "native" || scanSource === "imported")
@@ -391,6 +400,14 @@ function App() {
   const machineRoute = useMemo(() => classifyMachineRoute(hardware), [hardware]);
   const workflowLocked = scanState === "scanning" || assemblyBusy !== null || copyBusy;
 
+  useEffect(() => {
+    setVerificationStage("boot-tested");
+    setVerificationResult("passed");
+    setVerificationNotes("");
+    setVerificationChecks({});
+    setVerificationReview(null);
+  }, [verificationBindingKey]);
+
   function workflowStepAvailable(step: WorkflowStep): boolean {
     return canVisitWorkflowStep(step, {
       hardwareInputReady,
@@ -401,9 +418,15 @@ function App() {
   }
 
   function workflowStepDetail(step: WorkflowStep): string {
-    if (step === 1) return hardwareInputReady ? "报告已就绪" : "现在开始";
+    if (step === 1) {
+      if (hardwareInputReady) return "报告已就绪";
+      if (scanSource === "fixture") return "样本已载入";
+      return "现在开始";
+    }
     if (step === 2) {
-      return hardwareInputReady ? `${compatibilityDigest.attention} 项需要关注` : "等待本机报告";
+      if (hardwareInputReady) return `${compatibilityDigest.attention} 项需要关注`;
+      if (scanSource === "fixture") return `${compatibilityDigest.attention} 项需关注 · 样本预览`;
+      return "等待本机报告";
     }
     if (step === 3) {
       if (scaffoldResult?.readyForCopy) return "候选已校验";
@@ -640,6 +663,9 @@ function App() {
       if (result) {
         setIntelClockEvidence(result);
         resetBuildOutputs();
+        // resetBuildOutputs invalidates the operation epoch. Clear the busy state
+        // here so a successful DSDT analysis cannot leave the workflow locked.
+        setAssemblyBusy(null);
         setReportNotice(
           `DSDT 结构与校验和通过，已记录 ${result.confidence === "strong-clue" ? "强线索" : result.confidence === "possible-clue" ? "可能线索" : "证据不足"}；建议尚未自动应用。`,
         );

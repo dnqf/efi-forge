@@ -47,6 +47,42 @@ describe("ThinkPad model routing", () => {
     expect(result?.checks.find((check) => check.id === "cpu")?.status).toBe("passed");
   });
 
+  it("keeps native scanner classification for 8th-gen U-series ThinkPads guided", () => {
+    const t480 = assessThinkPad(
+      thinkPad({
+        cpu: {
+          ...sampleHardware.cpu,
+          name: "Intel Core i5-8350U",
+          generation: "kaby-lake-r",
+        },
+      }),
+      "14",
+    );
+    const t490 = assessThinkPad(
+      thinkPad({
+        system: {
+          kind: "laptop",
+          firmware: "uefi",
+          secureBoot: false,
+          manufacturer: "LENOVO",
+          productName: "ThinkPad T490",
+          machineType: "20N2",
+        },
+        cpu: {
+          ...sampleHardware.cpu,
+          name: "Intel Core i5-8265U",
+          generation: "kaby-lake-r",
+        },
+        board: { ...sampleHardware.board, vendor: "LENOVO", model: "20N2" },
+      }),
+      "14",
+    );
+
+    expect(t480).toMatchObject({ tier: "guided-candidate" });
+    expect(t490).toMatchObject({ tier: "guided-candidate" });
+    expect(t490?.checks.find((check) => check.id === "cpu")?.status).toBe("passed");
+  });
+
   it("routes an unknown ThinkPad without blocking user imports", () => {
     const result = assessThinkPad(
       thinkPad({
@@ -80,6 +116,22 @@ describe("ThinkPad model routing", () => {
     );
     expect(result?.checks.find((check) => check.id === "graphics")?.status).toBe("warning");
     expect(result?.checks.find((check) => check.id === "storage")?.status).toBe("warning");
+  });
+
+  it.each([
+    "SK hynix PC711 NVMe 512GB",
+    "Intel Optane Memory H10",
+    "Micron 2200S NVMe 512GB",
+  ])("keeps the ThinkPad storage panel aligned with global high-risk rules for %s", (name) => {
+    const result = assessThinkPad(
+      thinkPad({
+        storage: [{ id: "storage-risk", name, vendorId: "", deviceId: "" }],
+      }),
+      "14",
+    );
+
+    expect(result?.checks.find((check) => check.id === "storage")?.status).toBe("warning");
+    expect(result?.warnings).toContain("高风险 NVMe 不应作为推荐安装目标。");
   });
 
   it("does not treat Tiger Lake or AMD ThinkPads as automatic candidates", () => {

@@ -40,9 +40,18 @@ export function evaluateHardwareModules(
   const ethernetFindings = networkFindings.filter((finding) => !wirelessIds.has(finding.subjectId));
   const gpuFindings = byCategory("gpu");
   const hasSupportedGpu = gpuFindings.some((finding) => finding.status === "supported");
+  const supportedGpuIds = new Set(
+    gpuFindings
+      .filter((finding) => finding.status === "supported")
+      .map((finding) => finding.subjectId),
+  );
+  const hasSupportedIntelGpu = hardware.gpus.some(
+    (device) => device.vendorId.toUpperCase() === "8086" && supportedGpuIds.has(device.id),
+  );
   const hasKnownBlockedGpu = gpuFindings.some(
     (finding) => finding.status === "blocked" && !finding.ruleId.startsWith("system."),
   );
+  const canGloballyDisableUnsupportedGpu = hasSupportedIntelGpu && hasKnownBlockedGpu;
   const desktop = hardware.system.kind === "desktop";
   const hardwareEvidence = hardware.evidence;
   const bluetoothDevices = hardwareEvidence?.bluetooth ?? [];
@@ -62,11 +71,13 @@ export function evaluateHardwareModules(
       id: "graphics",
       label: "图形与混合显卡",
       status: aggregate(gpuFindings),
-      summary: hasSupportedGpu && hasKnownBlockedGpu
+      summary: canGloballyDisableUnsupportedGpu
         ? "同时存在可用与明确不兼容的显卡，需要用户选择处理方式。"
+        : hasSupportedGpu && hasKnownBlockedGpu
+          ? "同时存在可用与明确不兼容的独显；全局禁用参数也会关闭可用独显，需要设备级人工方案。"
         : "按每块显卡的 PCI 身份分别判断，不把未知显卡自动禁用。",
       evidence: evidence(gpuFindings),
-      choices: hasSupportedGpu && hasKnownBlockedGpu
+      choices: canGloballyDisableUnsupportedGpu
         ? [
             {
               id: "disable-unsupported-gpu",

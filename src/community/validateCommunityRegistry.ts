@@ -5,6 +5,18 @@ export interface CommunityRegistryIssue {
   message: string;
 }
 
+function isCalendarDate(value: string): boolean {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}
+
 export function validateCommunityRegistry(
   profiles: CommunityEfiProfile[],
 ): CommunityRegistryIssue[] {
@@ -43,13 +55,13 @@ export function validateCommunityRegistry(
     if (!/^\d+\.\d+\.\d+$/.test(profile.openCoreVersion)) {
       issues.push({ profileId: profile.id, message: "OpenCore 版本必须是固定的三段版本号。" });
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(profile.lastVerified)) {
+    if (!isCalendarDate(profile.lastVerified)) {
       issues.push({ profileId: profile.id, message: "最后验证日期格式无效。" });
     }
     if (!/^[0-9a-f]{64}$/i.test(profile.verification.configSha256)) {
       issues.push({ profileId: profile.id, message: "审核配置必须记录 64 位 config.plist SHA-256。" });
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(profile.audit.reviewedAt)) {
+    if (!isCalendarDate(profile.audit.reviewedAt)) {
       issues.push({ profileId: profile.id, message: "安全审核日期格式无效。" });
     }
     if (profile.status === "verified") {
