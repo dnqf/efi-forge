@@ -8,6 +8,7 @@ import type {
   MacOSVersion,
   ValidationCheck,
 } from "../domain/types";
+import { sha256Text } from "../utils/sha256";
 
 interface ComponentLockFile {
   schemaVersion: 1;
@@ -17,53 +18,57 @@ interface ComponentLockFile {
 
 const lock = componentLock as ComponentLockFile;
 
-function hardwareKey(report: HardwareReport): string {
-  const deviceKey = (category: string, device: HardwareReport["gpus"][number]) =>
-    [
+function normalizedIdentityText(value: string | number | boolean | undefined): string {
+  return String(value ?? "unknown")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+export function createHardwareFingerprint(report: HardwareReport): string {
+  const deviceKey = (category: string, device: HardwareReport["gpus"][number]) => {
+    const hasPciIdentity = Boolean(device.vendorId && device.deviceId);
+    return [
       category,
-      device.id,
-      device.name,
-      device.vendorId || "unknown",
-      device.deviceId || "unknown",
-      device.subsystemId ?? "unknown",
-      device.subsystemVendorId ?? "unknown",
-      device.subsystemDeviceId ?? "unknown",
-      device.revisionId ?? "unknown",
-      device.classCode ?? "unknown",
-      device.parentVendorId ?? "unknown",
-      device.parentDeviceId ?? "unknown",
-      device.parentClassCode ?? "unknown",
-      device.identitySource ?? "legacy-report",
+      `pci:${normalizedIdentityText(device.vendorId)}:${normalizedIdentityText(device.deviceId)}`,
+      `subsystem:${normalizedIdentityText(device.subsystemId)}`,
+      `subsystem-parts:${normalizedIdentityText(device.subsystemVendorId)}:${normalizedIdentityText(device.subsystemDeviceId)}`,
+      `revision:${normalizedIdentityText(device.revisionId)}`,
+      `class:${normalizedIdentityText(device.classCode)}`,
+      `parent:${normalizedIdentityText(device.parentVendorId)}:${normalizedIdentityText(device.parentDeviceId)}:${normalizedIdentityText(device.parentClassCode)}`,
+      hasPciIdentity ? "pci-name-ignored" : `fallback-name:${normalizedIdentityText(device.name)}`,
     ].join(":");
+  };
   const deviceKeys = (category: string, devices: HardwareReport["gpus"]) =>
     devices.map((device) => deviceKey(category, device)).sort();
 
-  return [
-    `schema:${report.schemaVersion}`,
-    report.system.kind,
-    report.system.firmware,
-    `secure-boot:${report.system.secureBoot}`,
-    report.system.manufacturer ?? "unknown",
-    report.system.productName ?? "unknown",
-    report.system.machineType ?? "unknown-machine-type",
-    report.cpu.vendor,
-    report.cpu.generation,
-    report.cpu.family,
-    report.cpu.model,
-    report.cpu.cores,
-    report.cpu.threads,
-    ...report.cpu.features.map((feature) => `cpu-feature:${feature}`).sort(),
-    report.board.vendor,
-    report.board.model,
-    report.board.biosVersion || "unknown-bios",
-    report.board.biosDate ?? "unknown-bios-date",
+  const canonicalIdentity = [
+    "hardware-fingerprint-v2",
+    normalizedIdentityText(report.system.kind),
+    normalizedIdentityText(report.system.firmware),
+    `secure-boot:${normalizedIdentityText(report.system.secureBoot)}`,
+    normalizedIdentityText(report.system.manufacturer),
+    normalizedIdentityText(report.system.productName),
+    normalizedIdentityText(report.system.machineType),
+    normalizedIdentityText(report.cpu.vendor),
+    normalizedIdentityText(report.cpu.generation),
+    normalizedIdentityText(report.cpu.family),
+    normalizedIdentityText(report.cpu.model),
+    normalizedIdentityText(report.cpu.cores),
+    normalizedIdentityText(report.cpu.threads),
+    ...report.cpu.features.map((feature) => `cpu-feature:${normalizedIdentityText(feature)}`).sort(),
+    normalizedIdentityText(report.board.vendor),
+    normalizedIdentityText(report.board.model),
+    normalizedIdentityText(report.board.biosVersion || "unknown-bios"),
+    normalizedIdentityText(report.board.biosDate ?? "unknown-bios-date"),
     ...deviceKeys("gpu", report.gpus),
     ...deviceKeys("network", report.network),
     ...deviceKeys("audio", report.audio),
     ...deviceKeys("storage", report.storage),
     ...(report.evidence
       ? [
-          `storage-mode:${report.evidence.storageMode}`,
+          `storage-mode:${normalizedIdentityText(report.evidence.storageMode)}`,
           ...(report.evidence.chipset
             ? [deviceKey("chipset", report.evidence.chipset)]
             : ["chipset:missing"]),
@@ -77,9 +82,9 @@ function hardwareKey(report: HardwareReport): string {
             .sort(),
         ]
       : ["evidence:unavailable"]),
-  ]
-    .join("|")
-    .toLowerCase();
+  ].join("|");
+
+  return `hardware-fingerprint-v2:${sha256Text(canonicalIdentity)}`;
 }
 
 function requestedFilesFor(plan: BuildPlan): Set<string> {
@@ -142,7 +147,7 @@ export function createEfiManifest(
   return {
     schemaVersion: 1,
     targetMacOS,
-    hardwareKey: hardwareKey(hardware),
+    hardwareKey: createHardwareFingerprint(hardware),
     sourceReportCapturedAt: hardware.capturedAt,
     profile: plan.profile,
     platform: plan.platform,

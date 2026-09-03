@@ -9,6 +9,7 @@ src-tauri/target-*/
 .env
 .env.*
 !.env.example
+.efi-forge-workspace.local.json
 *.pfx
 *.p12
 *.pem

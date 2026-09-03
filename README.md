@@ -94,6 +94,14 @@ npm run build
 npm run desktop:check
 ```
 
+系统盘空间紧张或需要隔离大型构建数据时，可复制 `.efi-forge-workspace.example.json` 为 `.efi-forge-workspace.local.json`，将 `dataRoot` 指向空间充足的非系统盘，然后通过工作区脚本运行。脚本仅对当前进程设置 npm、Cargo 和临时目录，不修改全局环境变量：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task full
+```
+
+开发历史仍保存在原 Git 仓库；缓存、编译输出与候选安装包的分层和恢复方式见 [开发数据与历史连续性](docs/DEVELOPMENT_STORAGE.zh-CN.md)。
+
 更新社区机型线索快照时，先人工审查指定提交，再用本地 README 生成确定性数据：
 
 ```powershell

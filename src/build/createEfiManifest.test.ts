@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createEfiManifest, serializeEfiManifest } from "./createEfiManifest";
+import {
+  createEfiManifest,
+  createHardwareFingerprint,
+  serializeEfiManifest,
+} from "./createEfiManifest";
 import { blockedHardware, sampleHardware } from "../data/sampleHardware";
 import { hardwareFixtures } from "../data/hardwareFixtures";
 import { compatibilityRules } from "../data/rules";
@@ -62,8 +66,7 @@ describe("EFI build manifest", () => {
     );
 
     expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
-    expect(first?.hardwareKey).toContain("12341043");
-    expect(first?.hardwareKey).toContain("direct-pci");
+    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
   });
 
   it("binds schema v2 manifests to firmware, controller and laptop evidence", () => {
@@ -128,10 +131,47 @@ describe("EFI build manifest", () => {
     );
 
     expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
-    expect(first?.hardwareKey).toContain("storage-mode:raid-vmd");
-    expect(first?.hardwareKey).toContain("storage-controller-0");
-    expect(first?.hardwareKey).toContain("secure-boot:false");
-    expect(second?.hardwareKey).toContain("secure-boot:true");
+    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
+    expect(second?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
+  });
+
+  it("keeps the fingerprint stable when scan order, temporary IDs and PCI display names change", () => {
+    const first = {
+      ...sampleHardware,
+      gpus: [
+        { ...sampleHardware.gpus[0], id: "gpu-0", name: "AMD Radeon RX 580" },
+        { ...sampleHardware.gpus[0], id: "gpu-1", name: "Microsoft Basic Display Adapter", deviceId: "67DF" },
+      ],
+    };
+    const second = {
+      ...first,
+      gpus: [
+        { ...first.gpus[1], id: "display-17", name: "Radeon RX 580 Series" },
+        { ...first.gpus[0], id: "display-03", name: "Radeon RX 580 Series" },
+      ],
+    };
+
+    expect(createHardwareFingerprint(first)).toBe(createHardwareFingerprint(second));
+    expect(createHardwareFingerprint(first)).toHaveLength(88);
+    expect(createHardwareFingerprint(first)).not.toContain("radeon");
+  });
+
+  it("uses a normalized device name only when PCI identity is unavailable", () => {
+    const first = {
+      ...sampleHardware,
+      audio: [{ ...sampleHardware.audio[0], id: "audio-0", vendorId: "", deviceId: "", name: "USB   Audio" }],
+    };
+    const equivalent = {
+      ...first,
+      audio: [{ ...first.audio[0], id: "audio-99", name: "  usb audio  " }],
+    };
+    const different = {
+      ...first,
+      audio: [{ ...first.audio[0], id: "audio-1", name: "Realtek Audio" }],
+    };
+
+    expect(createHardwareFingerprint(first)).toBe(createHardwareFingerprint(equivalent));
+    expect(createHardwareFingerprint(first)).not.toBe(createHardwareFingerprint(different));
   });
 
   it("exports high-risk hardware as a warned experimental manifest", () => {
@@ -307,8 +347,8 @@ describe("EFI build manifest", () => {
     );
 
     expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
-    expect(first?.hardwareKey).toContain("20l5");
-    expect(first?.hardwareKey).toContain("2025-01-01");
+    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
+    expect(second?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
   });
 
   it.each(hardwareFixtures)("keeps every fixture build plan fully covered: $id", ({ report }) => {
