@@ -32,7 +32,7 @@ export function validateCommunityRegistry(
     if (!/^[0-9a-f]{40}$/i.test(profile.source.revision)) {
       issues.push({ profileId: profile.id, message: "社区来源必须固定到 40 位 commit SHA。" });
     }
-    if (!profile.source.license.trim() || profile.source.license.toLowerCase() === "not-declared") {
+    if (!profile.source.license.trim() || profile.source.license.trim().toLowerCase() === "not-declared") {
       issues.push({ profileId: profile.id, message: "社区来源没有许可证记录。" });
     }
     if (
@@ -46,6 +46,12 @@ export function validateCommunityRegistry(
     }
     if (!profile.machine.biosVersions?.length) {
       issues.push({ profileId: profile.id, message: "没有声明经过验证的 BIOS 范围。" });
+    }
+    const identityLists = [profile.machine.manufacturerIncludes, profile.machine.modelIncludes,
+      profile.machine.boardModels, profile.machine.chipsets, profile.machine.systemSkus,
+      profile.machine.biosVersions ?? [], profile.machine.requiredAcpiFeatures];
+    if (identityLists.some((values) => values.some((value) => !value.trim()))) {
+      issues.push({ profileId: profile.id, message: "审核身份条件不能包含空白值。" });
     }
     if (!profile.machine.requiredPciIds?.length) {
       issues.push({ profileId: profile.id, message: "审核配置至少需要一个精确 PCI 身份。" });

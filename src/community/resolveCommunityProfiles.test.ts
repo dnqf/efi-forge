@@ -41,6 +41,29 @@ const verifiedProfile: CommunityEfiProfile = {
 };
 
 describe("community EFI profile resolver", () => {
+  it("rejects duplicate registry identities before matching", () => {
+    expect(resolveCommunityProfiles(sampleHardware, "14", [verifiedProfile, verifiedProfile])
+      .every((match) => match.status === "incompatible")).toBe(true);
+  });
+
+  it("does not accept inherited controller identity as required device evidence", () => {
+    const hardware = { ...sampleHardware, gpus: [{ ...sampleHardware.gpus[0], identitySource: "parent-pci" as const }] };
+    expect(resolveCommunityProfiles(hardware, "14", [verifiedProfile])[0].status).toBe("close");
+  });
+
+  it("rejects blank identity conditions", () => {
+    const profile = { ...verifiedProfile, machine: { ...verifiedProfile.machine, modelIncludes: [" "] } };
+    expect(resolveCommunityProfiles(sampleHardware, "14", [profile])[0].reasons.join(" ")).toContain("空白值");
+  });
+  it("keeps unobserved ACPI requirements as an uncertain candidate", () => {
+    const profile = { ...verifiedProfile, machine: { ...verifiedProfile.machine, requiredAcpiFeatures: ["PNP0C09"] } };
+    expect(resolveCommunityProfiles(sampleHardware, "14", [profile])[0].status).toBe("close");
+  });
+
+  it("does not call a similarly named motherboard an exact match", () => {
+    const hardware = { ...sampleHardware, board: { ...sampleHardware.board, model: "PRIME Z490-PRO" } };
+    expect(resolveCommunityProfiles(hardware, "14", [verifiedProfile])[0].status).not.toBe("exact");
+  });
   it("allows only a verified exact machine match", () => {
     const [match] = resolveCommunityProfiles(sampleHardware, "14", [verifiedProfile]);
 

@@ -18,11 +18,23 @@ const rawEvidence = {
   openCoreVersion: "1.0.7",
   configSha256: "a".repeat(64),
   observedAt: "2026-08-26T12:00:00+08:00",
-  observations: observationsForStage("recovery-tested", "passed"),
+  observations: observationsForStage("recovery-tested", "passed", { bootPicker: "passed", recovery: "passed" }),
   notes: ["进入 Recovery"],
 };
 
 describe("real-machine verification evidence", () => {
+  it("does not infer failed observations from a selected result", () => {
+    expect(Object.values(observationsForStage("boot-tested", "failed"))).toEqual(Array(9).fill("not-tested"));
+  });
+
+  it("rejects numeric OS values rather than storing an invalid type", () => {
+    expect(() => parseVerificationEvidence({ ...rawEvidence, targetMacOS: 14 })).toThrow("目标 macOS 无效");
+  });
+
+  it("does not call desktop entry alone post-install functional verification", () => {
+    expect(() => parseVerificationEvidence({ ...rawEvidence, stage: "post-install-verified",
+      observations: { ...rawEvidence.observations, installer: "passed", desktop: "passed" } })).toThrow("必要观察项");
+  });
   it("promotes only evidence bound to the exact hardware, BIOS, OS, OpenCore and config", () => {
     const evidence = parseVerificationEvidence(rawEvidence);
     const binding = {
@@ -73,7 +85,10 @@ describe("real-machine verification evidence", () => {
       binding,
       "post-install-verified",
       "passed",
-      observationsForStage("post-install-verified", "passed", { graphics: "passed" }),
+      observationsForStage("post-install-verified", "passed", {
+        bootPicker: "passed", recovery: "passed", installer: "passed", desktop: "passed",
+        graphics: "passed", network: "passed", audio: "passed", usb: "passed", sleep: "passed",
+      }),
       ["桌面与图形输出正常"],
       "2026-08-26T13:00:00+08:00",
     );

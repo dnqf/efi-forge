@@ -8,13 +8,19 @@ import { validateCommunityRegistry } from "./validateCommunityRegistry";
 
 function includesAny(value: string, candidates: string[]): boolean {
   const normalized = value.toLowerCase();
-  return candidates.some((candidate) => normalized.includes(candidate.toLowerCase()));
+  return candidates.some((candidate) => candidate.trim().length > 0 && normalized.includes(candidate.toLowerCase()));
+}
+
+function matchesModel(value: string, candidates: string[]): boolean {
+  const normalize = (text: string) => text.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  return candidates.some((candidate) => normalize(candidate).length > 0 && normalize(value) === normalize(candidate));
 }
 
 function allPciIds(report: HardwareReport): Set<string> {
   const devices = [...report.gpus, ...report.network, ...report.audio, ...report.storage];
   return new Set(
-    devices.map((device) => `${device.vendorId}:${device.deviceId}`.toLowerCase()),
+    devices.filter((device) => device.identitySource !== "parent-pci")
+      .map((device) => `${device.vendorId}:${device.deviceId}`.toLowerCase()),
   );
 }
 
@@ -27,9 +33,10 @@ export function resolveCommunityProfiles(
   const productName = report.system.productName ?? report.board.model;
   const chipsetIdentity = `${report.evidence?.chipset?.name ?? ""} ${report.board.model}`;
   const pciIds = allPciIds(report);
+  const issues = validateCommunityRegistry(profiles);
 
   return profiles.map((profile) => {
-    const registryIssues = validateCommunityRegistry([profile]);
+    const registryIssues = issues.filter((issue) => issue.profileId === profile.id);
     if (registryIssues.length > 0) {
       return {
         profile,
@@ -40,8 +47,8 @@ export function resolveCommunityProfiles(
     const baseMatches =
       profile.machine.kind === report.system.kind &&
       includesAny(manufacturer, profile.machine.manufacturerIncludes) &&
-      includesAny(productName, profile.machine.modelIncludes) &&
-      includesAny(report.board.model, profile.machine.boardModels) &&
+      matchesModel(productName, profile.machine.modelIncludes) &&
+      matchesModel(report.board.model, profile.machine.boardModels) &&
       includesAny(chipsetIdentity, profile.machine.chipsets) &&
       profile.machine.cpuGenerations.includes(report.cpu.generation) &&
       profile.compatibleMacOS.includes(targetMacOS);
@@ -65,8 +72,11 @@ export function resolveCommunityProfiles(
     );
     if (!devicesMatch) reasons.push("一个或多个关键 PCI 设备与整包记录不一致。 ");
 
+    // Reports do not yet carry semantic, BIOS-bound ACPI feature evidence.
+    const acpiMatches = profile.machine.requiredAcpiFeatures.length === 0;
+    if (!acpiMatches) reasons.push("尚未取得该 BIOS 的必要 ACPI 特征语义证据；仅作为人工核对候选。");
     const canUseAutomatically =
-      profile.status === "verified" && biosMatches && devicesMatch && skuMatches;
+      profile.status === "verified" && biosMatches && devicesMatch && skuMatches && acpiMatches;
 
     if (profile.status !== "verified") reasons.push("该来源尚未通过项目维护者审核。 ");
 

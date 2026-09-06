@@ -14,13 +14,17 @@ EFI Forge 的源码与 `.git` 必须继续保存在同一个仓库目录中。�
 
 ## 使用方式
 
+日常建议使用 `npm run workspace:check`、`npm run workspace:full` 和 `npm run workspace:build`，确保读取本机的数据目录配置。原有 `npm test`、`npm run build` 等仍可用，但不会主动加载这份配置。
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task check
 powershell -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task native
 powershell -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task full
 ```
 
-脚本只在当前进程中设置 `TEMP`、`TMP`、`npm_config_cache` 和 `CARGO_TARGET_DIR`，不会永久修改 Windows 的全局环境变量。`desktop-build` 与 `full` 会先检查目标盘至少还有 12 GB 可用空间，避免再次把系统盘或数据盘写满。
+脚本只在运行期间设置 `TEMP`、`TMP`、`npm_config_cache` 和 `CARGO_TARGET_DIR`，退出时恢复原值，不会永久修改 Windows 的全局环境变量。`desktop-build` 与 `full` 会先检查目标盘至少还有 12 GB 可用空间。
+
+这只是开发构建目录配置，不会迁移安装后的应用缓存、用户选择的 EFI 输出目录、Codex 会话或源码。安装后的应用仍使用系统临时目录保存组件缓存；不能据此承诺 C 盘完全不再产生数据。
 
 ## 可恢复性
 

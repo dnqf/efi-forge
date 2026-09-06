@@ -4,6 +4,7 @@ import type {
   CompatibilityReport,
   HardwareReport,
 } from "../domain/types";
+import { isDesktopUhd630 } from "./deviceIdentity";
 
 const coffeeAutoChipsets = ["B360", "B365", "H310", "H370", "Z390"];
 const cometAutoChipsets = ["B460", "Z490"];
@@ -98,9 +99,10 @@ export function createBuildPlan(
     );
   }
 
-  const isAmdZen = hardware.cpu.vendor === "amd" && hardware.cpu.generation.startsWith("zen-");
-  const isCoffee = hardware.cpu.vendor === "intel" && hardware.cpu.generation === "coffee-lake";
-  const isComet = hardware.cpu.vendor === "intel" && hardware.cpu.generation === "comet-lake";
+  const isDesktop = hardware.system.kind === "desktop";
+  const isAmdZen = isDesktop && hardware.cpu.vendor === "amd" && hardware.cpu.generation.startsWith("zen-");
+  const isCoffee = isDesktop && hardware.cpu.vendor === "intel" && hardware.cpu.generation === "coffee-lake";
+  const isComet = isDesktop && hardware.cpu.vendor === "intel" && hardware.cpu.generation === "comet-lake";
   const chipset = detectChipset(hardware);
   const platform: BuildPlan["platform"] = isAmdZen
     ? "amd-zen"
@@ -141,9 +143,7 @@ export function createBuildPlan(
     );
   }
 
-  const intelIgpu = hardware.gpus.find(
-    (device) => device.vendorId.toUpperCase() === "8086" && device.name.toUpperCase().includes("UHD GRAPHICS 630"),
-  );
+  const intelIgpu = (isCoffee || isComet) ? hardware.gpus.find(isDesktopUhd630) : undefined;
   const supportedExternalGpu = hardware.gpus.some(
     (device) => device.vendorId.toUpperCase() !== "8086" && supportedGpuIds.has(device.id),
   );
@@ -176,6 +176,7 @@ export function createBuildPlan(
   const supportedIntelChipset = reviewedIntelClockPath;
   const tahoeManualOnly = report.targetMacOS === "26";
   const autoConfigSupported =
+    report.feasibility.automaticPath &&
     hardware.system.kind === "desktop" &&
     hardware.system.firmware === "uefi" &&
     !tahoeManualOnly &&

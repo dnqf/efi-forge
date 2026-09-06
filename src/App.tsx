@@ -146,10 +146,14 @@ const verificationStageCopy: Record<CompletedVerificationStage, string> = {
   "boot-tested": "OpenCore Picker 已启动",
   "recovery-tested": "Recovery 已启动",
   "install-verified": "安装流程已完成",
-  "post-install-verified": "已进入安装后的桌面",
+  "post-install-verified": "桌面与核心功能已逐项验证",
 };
 
-const optionalVerificationChecks: { key: keyof VerificationObservations; label: string }[] = [
+const verificationCheckFields: { key: keyof VerificationObservations; label: string }[] = [
+  { key: "bootPicker", label: "OpenCore Picker" },
+  { key: "recovery", label: "Recovery 启动" },
+  { key: "installer", label: "完成安装" },
+  { key: "desktop", label: "进入桌面" },
   { key: "graphics", label: "图形输出" },
   { key: "network", label: "网络" },
   { key: "audio", label: "音频" },
@@ -157,7 +161,7 @@ const optionalVerificationChecks: { key: keyof VerificationObservations; label: 
   { key: "sleep", label: "睡眠/唤醒" },
 ];
 
-const appVersion = "0.1.13";
+const appVersion = "0.1.14";
 
 function deviceIdentityCopy(device: HardwareReport["gpus"][number] | undefined): string {
   if (!device) return "----:----";
@@ -952,7 +956,7 @@ function App() {
             EF
           </span>
           <div>
-            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.13</p>
+            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.14</p>
             <h1>EFI Forge</h1>
           </div>
         </div>
@@ -2257,7 +2261,7 @@ function App() {
                           <option value="failed">失败</option>
                         </select>
                       </label>
-                      {optionalVerificationChecks.map((check) => (
+                      {verificationCheckFields.map((check) => (
                         <label key={check.key}>
                           <span>{check.label}</span>
                           <select
@@ -2275,7 +2279,7 @@ function App() {
                       ))}
                     </div>
                     <label className="verification-notes">
-                      <span>备注（每行一项，最多 12 项）</span>
+                      <span>备注（每行一项，最多 12 项；请勿填写序列号、账号或其他隐私）</span>
                       <textarea value={verificationNotes} onChange={(event) => setVerificationNotes(event.target.value)} rows={3} maxLength={3000} placeholder="例如：从独立 U 盘进入 Recovery；睡眠唤醒尚未测试" />
                     </label>
                     <div className="verification-actions">
@@ -2399,7 +2403,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.13-dev</span>
+        <span>EFI Forge v0.1.14-dev</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

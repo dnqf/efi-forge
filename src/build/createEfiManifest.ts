@@ -18,8 +18,9 @@ interface ComponentLockFile {
 
 const lock = componentLock as ComponentLockFile;
 
-function normalizedIdentityText(value: string | number | boolean | undefined): string {
-  return String(value ?? "unknown")
+function normalizedIdentityText(value: string | number | boolean | undefined): string | null {
+  if (value === undefined) return null;
+  return String(value)
     .normalize("NFKC")
     .trim()
     .replace(/\s+/g, " ")
@@ -29,25 +30,26 @@ function normalizedIdentityText(value: string | number | boolean | undefined): s
 export function createHardwareFingerprint(report: HardwareReport): string {
   const deviceKey = (category: string, device: HardwareReport["gpus"][number]) => {
     const hasPciIdentity = Boolean(device.vendorId && device.deviceId);
-    return [
+    return JSON.stringify([
       category,
-      `pci:${normalizedIdentityText(device.vendorId)}:${normalizedIdentityText(device.deviceId)}`,
-      `subsystem:${normalizedIdentityText(device.subsystemId)}`,
-      `subsystem-parts:${normalizedIdentityText(device.subsystemVendorId)}:${normalizedIdentityText(device.subsystemDeviceId)}`,
-      `revision:${normalizedIdentityText(device.revisionId)}`,
-      `class:${normalizedIdentityText(device.classCode)}`,
-      `parent:${normalizedIdentityText(device.parentVendorId)}:${normalizedIdentityText(device.parentDeviceId)}:${normalizedIdentityText(device.parentClassCode)}`,
-      hasPciIdentity ? "pci-name-ignored" : `fallback-name:${normalizedIdentityText(device.name)}`,
-    ].join(":");
+      normalizedIdentityText(device.identitySource ?? (hasPciIdentity ? "direct-pci" : "name-only")),
+      normalizedIdentityText(device.vendorId), normalizedIdentityText(device.deviceId),
+      normalizedIdentityText(device.subsystemId),
+      normalizedIdentityText(device.subsystemVendorId), normalizedIdentityText(device.subsystemDeviceId),
+      normalizedIdentityText(device.revisionId),
+      normalizedIdentityText(device.classCode),
+      normalizedIdentityText(device.parentVendorId), normalizedIdentityText(device.parentDeviceId), normalizedIdentityText(device.parentClassCode),
+      hasPciIdentity ? null : normalizedIdentityText(device.name),
+    ]);
   };
   const deviceKeys = (category: string, devices: HardwareReport["gpus"]) =>
     devices.map((device) => deviceKey(category, device)).sort();
 
-  const canonicalIdentity = [
-    "hardware-fingerprint-v2",
+  const canonicalIdentity = JSON.stringify([
+    "hardware-fingerprint-v3",
     normalizedIdentityText(report.system.kind),
     normalizedIdentityText(report.system.firmware),
-    `secure-boot:${normalizedIdentityText(report.system.secureBoot)}`,
+    normalizedIdentityText(report.system.secureBoot),
     normalizedIdentityText(report.system.manufacturer),
     normalizedIdentityText(report.system.productName),
     normalizedIdentityText(report.system.machineType),
@@ -57,34 +59,30 @@ export function createHardwareFingerprint(report: HardwareReport): string {
     normalizedIdentityText(report.cpu.model),
     normalizedIdentityText(report.cpu.cores),
     normalizedIdentityText(report.cpu.threads),
-    ...report.cpu.features.map((feature) => `cpu-feature:${normalizedIdentityText(feature)}`).sort(),
+    report.cpu.features.map((feature) => normalizedIdentityText(feature)).sort(),
     normalizedIdentityText(report.board.vendor),
     normalizedIdentityText(report.board.model),
     normalizedIdentityText(report.board.biosVersion || "unknown-bios"),
     normalizedIdentityText(report.board.biosDate ?? "unknown-bios-date"),
-    ...deviceKeys("gpu", report.gpus),
-    ...deviceKeys("network", report.network),
-    ...deviceKeys("audio", report.audio),
-    ...deviceKeys("storage", report.storage),
-    ...(report.evidence
+    deviceKeys("gpu", report.gpus),
+    deviceKeys("network", report.network),
+    deviceKeys("audio", report.audio),
+    deviceKeys("storage", report.storage),
+    (report.evidence
       ? [
-          `storage-mode:${normalizedIdentityText(report.evidence.storageMode)}`,
-          ...(report.evidence.chipset
-            ? [deviceKey("chipset", report.evidence.chipset)]
-            : ["chipset:missing"]),
-          ...deviceKeys("storage-controller", report.evidence.storageControllers),
-          ...deviceKeys("usb-controller", report.evidence.usbControllers),
-          ...deviceKeys("thunderbolt-controller", report.evidence.thunderboltControllers),
-          ...deviceKeys("bluetooth", report.evidence.bluetooth),
-          ...deviceKeys("input-controller", report.evidence.inputControllers),
-          ...Object.entries(report.evidence.laptop)
-            .map(([name, present]) => `laptop:${name}:${present}`)
-            .sort(),
+          normalizedIdentityText(report.evidence.storageMode),
+          report.evidence.chipset ? deviceKey("chipset", report.evidence.chipset) : null,
+          deviceKeys("storage-controller", report.evidence.storageControllers),
+          deviceKeys("usb-controller", report.evidence.usbControllers),
+          deviceKeys("thunderbolt-controller", report.evidence.thunderboltControllers),
+          deviceKeys("bluetooth", report.evidence.bluetooth),
+          deviceKeys("input-controller", report.evidence.inputControllers),
+          Object.entries(report.evidence.laptop).sort(([a], [b]) => a.localeCompare(b, "en")),
         ]
-      : ["evidence:unavailable"]),
-  ].join("|");
+      : null),
+  ]);
 
-  return `hardware-fingerprint-v2:${sha256Text(canonicalIdentity)}`;
+  return `hardware-fingerprint-v3:${sha256Text(canonicalIdentity)}`;
 }
 
 function requestedFilesFor(plan: BuildPlan): Set<string> {

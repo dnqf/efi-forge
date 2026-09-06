@@ -10,6 +10,7 @@ import type {
   RuleSelector,
 } from "../domain/types";
 import { evaluateHardwareModules } from "./evaluateHardwareModules";
+import { canonicalDeviceName } from "./deviceIdentity";
 import { evaluateLegacyFeasibility } from "./evaluateLegacyFeasibility";
 
 interface Subject {
@@ -32,6 +33,8 @@ function includesAny(value: string, candidates: string[]): boolean {
 }
 
 function matchesSelector(subject: Subject, selector: RuleSelector): boolean {
+  // A controller inherited through PNP ancestry is not the graphics device.
+  if (subject.category === "gpu" && subject.device?.identitySource === "parent-pci") return false;
   if (selector.values && !selector.values.some((value) => normalize(value) === normalize(subject.value ?? ""))) {
     return false;
   }
@@ -75,7 +78,8 @@ function matchesSelector(subject: Subject, selector: RuleSelector): boolean {
     )
   ) return false;
 
-  if (selector.nameIncludes && !includesAny(subject.name, selector.nameIncludes)) {
+  const identityName = subject.device ? canonicalDeviceName(subject.device) : subject.name;
+  if (selector.nameIncludes && !includesAny(identityName, selector.nameIncludes)) {
     return false;
   }
 

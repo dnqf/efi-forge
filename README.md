@@ -6,7 +6,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 
 `v0.1.12` 是预发布测试版，不代表任意硬件可以安装成功；下载、哈希和已知边界以 Release 页为准。
 
-`main` 分支包含 Hardware Evidence 2.0 报告与控制器证据账本，但不会因此扩大未审核自动 EFI 范围。公开安装包须以 v0.1.13 Release 的实际发布状态为准。
+源码候选现为 `v0.1.14 Alpha`，包含 Hardware Evidence 2.0、型号匹配与指纹修复、笔记本/台式机配置隔离和显式真机观察项。候选构建不等于公开发布，也不会扩大未审核自动 EFI 范围。详见 [v0.1.14 改进记录](docs/RELEASE_NOTES_v0.1.14.zh-CN.md)。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
@@ -15,7 +15,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 - 版本说明：[EFI Forge v0.1.12 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.12)
 - Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/EFI.Forge_0.1.12_x64-setup.exe)
 - 校验文件：[SHA256SUMS.txt](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/SHA256SUMS.txt)
-- 正在开发：`main` 分支为 v0.1.13 候选，尚未作为 GitHub Release 公开下载。
+- 本地新候选：v0.1.14；请以 GitHub Release 实际存在的标签与资产为准，不把本地版本号当作公开下载地址。
 - 历史版本：[v0.1.10](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)、[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)、[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
 
 不要使用来源不明的 GitHub 加速站。安装后仍应核对安装程序哈希；当前 Alpha 尚未数字签名，Windows 可能显示未知发布者。

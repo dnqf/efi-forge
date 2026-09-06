@@ -1,7 +1,7 @@
 {
   "name": "efi-forge",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.14",
   "homepage": "https://github.com/dnqf/efi-forge",
   "repository": {
     "type": "git",
@@ -9,6 +9,9 @@
   },
   "type": "module",
   "scripts": {
+    "workspace:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task check",
+    "workspace:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task full",
+    "workspace:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task desktop-build",
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build --configLoader runner",
     "desktop:dev": "tauri dev",

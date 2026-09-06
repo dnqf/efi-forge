@@ -62,7 +62,7 @@ const requiredObservations: Record<CompletedVerificationStage, (keyof Verificati
   "boot-tested": ["bootPicker"],
   "recovery-tested": ["bootPicker", "recovery"],
   "install-verified": ["bootPicker", "recovery", "installer"],
-  "post-install-verified": ["bootPicker", "recovery", "installer", "desktop"],
+  "post-install-verified": [...observationKeys],
 };
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -109,16 +109,13 @@ function validateStageResult(evidence: VerificationEvidence): void {
 }
 
 export function observationsForStage(
-  stage: CompletedVerificationStage,
-  result: "passed" | "failed",
+  _stage: CompletedVerificationStage,
+  _result: "passed" | "failed",
   optional: Partial<VerificationObservations> = {},
 ): VerificationObservations {
   const observations = Object.fromEntries(
     observationKeys.map((key) => [key, "not-tested"]),
   ) as unknown as VerificationObservations;
-  const required = requiredObservations[stage];
-  for (const key of required) observations[key] = "passed";
-  if (result === "failed") observations[required.at(-1)!] = "failed";
   for (const key of observationKeys) {
     if (optional[key]) observations[key] = optional[key];
   }
@@ -151,7 +148,7 @@ export function parseVerificationEvidence(value: unknown): VerificationEvidence 
     throw new Error("验证阶段无效。");
   }
   if (data.result !== "passed" && data.result !== "failed") throw new Error("验证结果无效。");
-  if (!["13", "14", "15", "26"].includes(String(data.targetMacOS))) throw new Error("目标 macOS 无效。");
+  if (typeof data.targetMacOS !== "string" || !["13", "14", "15", "26"].includes(data.targetMacOS)) throw new Error("目标 macOS 无效。");
   const configSha256 = text(data.configSha256, "config SHA-256", 64).toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(configSha256)) throw new Error("config SHA-256 格式无效。");
   if (!Array.isArray(data.notes) || data.notes.length > 12) {

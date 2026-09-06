@@ -66,7 +66,7 @@ describe("EFI build manifest", () => {
     );
 
     expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
-    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
+    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v3:[0-9a-f]{64}$/);
   });
 
   it("binds schema v2 manifests to firmware, controller and laptop evidence", () => {
@@ -131,8 +131,8 @@ describe("EFI build manifest", () => {
     );
 
     expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
-    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
-    expect(second?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
+    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v3:[0-9a-f]{64}$/);
+    expect(second?.hardwareKey).toMatch(/^hardware-fingerprint-v3:[0-9a-f]{64}$/);
   });
 
   it("keeps the fingerprint stable when scan order, temporary IDs and PCI display names change", () => {
@@ -347,8 +347,8 @@ describe("EFI build manifest", () => {
     );
 
     expect(first?.hardwareKey).not.toBe(second?.hardwareKey);
-    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
-    expect(second?.hardwareKey).toMatch(/^hardware-fingerprint-v2:[0-9a-f]{64}$/);
+    expect(first?.hardwareKey).toMatch(/^hardware-fingerprint-v3:[0-9a-f]{64}$/);
+    expect(second?.hardwareKey).toMatch(/^hardware-fingerprint-v3:[0-9a-f]{64}$/);
   });
 
   it.each(hardwareFixtures)("keeps every fixture build plan fully covered: $id", ({ report }) => {

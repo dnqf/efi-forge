@@ -54,6 +54,11 @@ if ($drive.AvailableFreeSpace -lt $minimumFreeBytes) {
   throw "Insufficient development data disk space: ${required} GB required, ${available} GB available."
 }
 
+$workspaceEnvNames = @("EFI_FORGE_DEV_DATA", "npm_config_cache", "CARGO_TARGET_DIR", "TEMP", "TMP")
+$previousWorkspaceEnv = @{}
+foreach ($name in $workspaceEnvNames) {
+  $previousWorkspaceEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 $env:EFI_FORGE_DEV_DATA = $dataRootPath
 $env:npm_config_cache = $npmCache
 $env:CARGO_TARGET_DIR = $cargoTarget
@@ -98,4 +103,11 @@ try {
   }
 } finally {
   Pop-Location
+  foreach ($name in $workspaceEnvNames) {
+    if ($null -eq $previousWorkspaceEnv[$name]) {
+      Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    } else {
+      [Environment]::SetEnvironmentVariable($name, $previousWorkspaceEnv[$name], "Process")
+    }
+  }
 }
