@@ -16,11 +16,12 @@ EFI Forge 是面向中文 OpenCore 初学者和维护者的 Windows 桌面候选
 4. 不因误选路径覆盖现有 EFI 或其他用户文件。
 5. 将 Picker、Recovery、安装和安装后结果以脱敏、精确绑定的证据返回工具。
 
-## 3. v0.1.13 开发范围
+## 3. v0.1.15 开发范围
 
 ### 已实现路径
 
 - Windows 10/11 x64 只读硬件扫描与脱敏 JSON 导入/导出；schema v2 增加控制器、父 PCI 与笔记本 PnP 线索，旧 v1 报告继续兼容。
+- 用户可撤销地补充整机、主板、BIOS 与 PCI 信息；手工值保留来源标签，不能取得扫描证据或自动模板资格。
 - Ventura 13、Sonoma 14、Sequoia 15 规则；Tahoe 26 只开放手动研究路径。
 - 已审核 AMD Zen B450/B550 与 Intel Coffee Lake/Comet Lake 台式机候选生成。
 - 新旧 Intel、AMD APU、ThinkPad 和 Legacy BIOS 手动/研究路由，不伪装成自动配置。
@@ -28,6 +29,7 @@ EFI Forge 是面向中文 OpenCore 初学者和维护者的 Windows 桌面候选
 - VMD/RST/RAID、AHCI、NVMe、USB xHCI、Thunderbolt/USB4、Intel SST、I2C/PS2、电池、摄像头、指纹和读卡器证据账本；这些线索不会自动升级为“已支持”。
 - DIY、OEM 台式机、ThinkPad、普通/AMD 笔记本、迷你机、工作站和旧平台分路由说明，不扩大未审核自动模板。
 - 固定版本组件、下载上限、SHA-256、安全解压和同版本 `ocvalidate`。
+- EFI Forge 自有运行时缓存位置可查询和切换，并具备低空间、危险目录、重解析点与损坏缓存门禁；不自动迁移或清理旧缓存。
 - 完整 EFI 只读检查，以及 Kext、AML、UEFI Driver 显式选择和新目录融合。
 - 只向空目录复制 `EFI`；复制前后重新检查，不覆盖、不格式化。
 - ThinkPad 变体路由与 daliansky/Hackintosh 社区候选账本。社区链接只是未审核线索，不自动下载或参与 BuildPlan。

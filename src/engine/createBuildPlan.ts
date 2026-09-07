@@ -5,6 +5,11 @@ import type {
   HardwareReport,
 } from "../domain/types";
 import { isDesktopUhd630 } from "./deviceIdentity";
+import {
+  canUseDeviceForAutomation,
+  canUseFieldForAutomation,
+  manualDeviceIds,
+} from "../workflow/hardwareProvenancePolicy";
 
 const coffeeAutoChipsets = ["B360", "B365", "H310", "H370", "Z390"];
 const cometAutoChipsets = ["B460", "Z490"];
@@ -17,7 +22,11 @@ const amdLateBiosSensitiveChipsets = ["B450", "X470"];
 const amdLate2020BiosProxy = "2020-10-01";
 
 function detectChipset(hardware: HardwareReport): string {
-  const normalized = `${hardware.evidence?.chipset?.name ?? ""} ${hardware.board.model}`.toUpperCase();
+  const evidenceChipset = canUseDeviceForAutomation(hardware.evidence?.chipset)
+    ? hardware.evidence?.chipset?.name ?? ""
+    : "";
+  const boardModel = canUseFieldForAutomation(hardware, "board.model") ? hardware.board.model : "";
+  const normalized = `${evidenceChipset} ${boardModel}`.toUpperCase();
   return [...coffeeAutoChipsets, ...cometAutoChipsets, ...amdAutoChipsets, "Z370", "H470", "H410"]
     .find((chipset) => normalized.includes(chipset)) ?? "unknown";
 }
@@ -33,13 +42,21 @@ export function createBuildPlan(
   const notes = ["从匹配版本的 OpenCore Sample.plist 开始生成配置。"];
   const bootArgs = ["-v", "debug=0x100", "keepsyms=1"];
   const riskyFindings = report.findings.filter((finding) => finding.status === "blocked");
+  const userProvidedDeviceIds = manualDeviceIds(hardware);
 
-  for (const operation of report.findings.flatMap((finding) => finding.operations)) {
+  for (const operation of report.findings
+    .filter((finding) => !userProvidedDeviceIds.has(finding.subjectId))
+    .flatMap((finding) => finding.operations)) {
     if (operation.type === "add-component") components.add(operation.value);
     if (operation.type === "add-boot-arg" && !bootArgs.includes(operation.value)) {
       bootArgs.push(operation.value);
     }
     if (operation.type === "add-note") notes.push(operation.value);
+  }
+  if (userProvidedDeviceIds.size > 0) {
+    notes.push(
+      `保留 ${userProvidedDeviceIds.size} 个 user-provided 设备作为人工复核线索；不会据此自动加入组件、启动参数或精确显卡配置。`,
+    );
   }
 
   if (preferences.customUsbMapIncluded) {
@@ -67,27 +84,38 @@ export function createBuildPlan(
       )
       .map((finding) => finding.subjectId),
   );
-  const hasI225 = hardware.network.some((device) => device.name.toUpperCase().includes("I225"));
+  const hasI225 = hardware.network.some(
+    (device) => canUseDeviceForAutomation(device) && device.name.toUpperCase().includes("I225"),
+  );
   if (hasI225) {
     notes.push("I225 在 macOS 13+ 需要按主板验证 DEXT/VT-d 或旧 Kext 回退；不能仅凭扫描保证 Recovery 网络可用。 ");
-    if (hardware.board.vendor.toLowerCase().includes("gigabyte")) bootArgs.push("e1000=0");
+    if (
+      canUseFieldForAutomation(hardware, "board.vendor")
+      && hardware.board.vendor.toLowerCase().includes("gigabyte")
+    ) bootArgs.push("e1000=0");
   }
-  if (hardware.network.some((device) => device.name.toUpperCase().includes("I226"))) {
+  if (hardware.network.some(
+    (device) => canUseDeviceForAutomation(device) && device.name.toUpperCase().includes("I226"),
+  )) {
     notes.push("I226 通常需要 AppleIGC；当前不自动加入未经过本工具实机验证的网络驱动。 ");
   }
 
   if (
     hardware.network.some(
       (device) =>
+        canUseDeviceForAutomation(device) &&
         device.vendorId.toUpperCase() === "8086" && device.deviceId.toUpperCase() === "1539",
     )
   ) {
     notes.push("Intel I211 保留为实验网络方案；当前不自动加入没有可锁定正式 Release 的 AppleIGB。 ");
   }
 
-  const hasNvme = hardware.storage.some((device) => device.name.toUpperCase().includes("NVME"))
+  const hasNvme = hardware.storage.some(
+    (device) => canUseDeviceForAutomation(device) && device.name.toUpperCase().includes("NVME"),
+  )
     || hardware.evidence?.storageControllers.some(
-      (device) => device.classCode?.startsWith("0108") || /NVME/i.test(device.name),
+      (device) => canUseDeviceForAutomation(device)
+        && (device.classCode?.startsWith("0108") || /NVME/i.test(device.name)),
     ) === true;
   if (hasNvme) {
     components.add("NVMeFix.kext");
@@ -127,7 +155,11 @@ export function createBuildPlan(
     acpi.push("SSDT-PLUG-DRTNIA.aml", "SSDT-EC-USBX-DESKTOP.aml");
     if (reviewedIntelClockPath && intelClockMode === "awac") acpi.push("SSDT-AWAC.aml");
     if (isCoffee && coffeeAutoChipsets.includes(chipset)) acpi.push("SSDT-PMC.aml");
-    if (isComet && hardware.board.vendor.toLowerCase().includes("asus")) {
+    if (
+      isComet
+      && canUseFieldForAutomation(hardware, "board.vendor")
+      && hardware.board.vendor.toLowerCase().includes("asus")
+    ) {
       acpi.push("SSDT-RHUB.aml");
     }
   }
@@ -145,10 +177,12 @@ export function createBuildPlan(
 
   const intelIgpu = (isCoffee || isComet) ? hardware.gpus.find(isDesktopUhd630) : undefined;
   const supportedExternalGpu = hardware.gpus.some(
-    (device) => device.vendorId.toUpperCase() !== "8086" && supportedGpuIds.has(device.id),
+    (device) => canUseDeviceForAutomation(device)
+      && device.vendorId.toUpperCase() !== "8086" && supportedGpuIds.has(device.id),
   );
   const blockedExternalGpu = hardware.gpus.some(
-    (device) => device.vendorId.toUpperCase() !== "8086" && blockedGpuIds.has(device.id),
+    (device) => canUseDeviceForAutomation(device)
+      && device.vendorId.toUpperCase() !== "8086" && blockedGpuIds.has(device.id),
   );
   const igpuPlatformId = intelIgpu
     ? supportedExternalGpu

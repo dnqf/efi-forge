@@ -1,4 +1,5 @@
 import type { BuildPlan, CompatibilityReport, HardwareReport } from "../domain/types";
+import { hasDirectPciIdentity } from "../engine/deviceIdentity";
 
 export type BuildReadinessMode = "auto-candidate" | "manual-components";
 export type BuildRouteId = "project-candidate" | "user-efi" | "component-merge";
@@ -124,9 +125,7 @@ function collectEvidenceGaps(hardware: HardwareReport): HardwareEvidenceGap[] {
   }
 
   const devices = deviceGroups.flatMap(([, , group]) => [...group]);
-  const weakIdentityCount = devices.filter(
-    (device) => !device.vendorId || !device.deviceId || device.identitySource === "name-only",
-  ).length;
+  const weakIdentityCount = devices.filter((device) => !hasDirectPciIdentity(device)).length;
   if (weakIdentityCount > 0) {
     gaps.push({
       id: "pci-identity",

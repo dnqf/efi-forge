@@ -64,4 +64,18 @@ describe("hardware evidence summary", () => {
     expect(summary.bluetoothCount).toBe(1);
     expect(summary.laptopClues).toEqual(expect.arrayContaining(["电池", "I2C", "Intel SST"]));
   });
+
+  it("counts a known wireless PCI identity independently of its Windows display name", () => {
+    const summary = summarizeHardwareEvidence({
+      ...sampleHardware,
+      network: [{
+        id: "network-wireless",
+        name: "Network Controller",
+        vendorId: "8086",
+        deviceId: "2723",
+      }],
+    });
+
+    expect(summary.wirelessCount).toBe(1);
+  });
 });

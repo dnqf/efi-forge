@@ -64,9 +64,39 @@ import {
 import { formatOperationFailure } from "./workflow/operationFailure";
 import { createHandoffSummary, serializeHandoffSummary } from "./workflow/handoffSummary";
 import {
+  applyHardwareOverrides,
+  emptyHardwareOverrideDraft,
+  hasManualHardwareOverrides,
+  type HardwareOverrideDraft,
+  type OverrideDeviceCategory,
+} from "./workflow/hardwareOverrides";
+import { artifactAfterMergePreferenceChange } from "./workflow/workflowDecisions";
+import { deliveryPresentation, failedVerificationPresentation } from "./workflow/deliveryPresentation";
+import { getCacheStatus, selectCacheLocation, type CacheStatus } from "./native/cache";
+import {
+  acceptWorkflowInputResult,
+  beginWorkflowOperation,
+  bindWorkflowArtifact,
+  bindWorkflowCopy,
+  bindWorkflowVerification,
+  canAcceptWorkflowResult,
+  changeWorkflowInput,
+  changeWorkflowPlan,
+  clearWorkflowArtifact,
+  clearWorkflowArtifactOutcomes,
+  createWorkflowArtifactLifecycle,
+  discardWorkflowArtifact,
+  finishWorkflowOperation,
+  isWorkflowArtifactCurrent,
+  replaceWorkflowArtifact,
+  type WorkflowArtifactSource,
+  type WorkflowOperation,
+  type WorkflowRevisionToken,
+} from "./workflow/artifactLifecycle";
+import {
   createVerificationEvidence,
+  initializeVerificationObservations,
   mayPromoteVerification,
-  observationsForStage,
   parseVerificationEvidence,
   serializeVerificationEvidence,
   verifyEvidenceBinding,
@@ -161,7 +191,14 @@ const verificationCheckFields: { key: keyof VerificationObservations; label: str
   { key: "sleep", label: "睡眠/唤醒" },
 ];
 
-const appVersion = "0.1.14";
+const overrideDeviceLabels: Record<OverrideDeviceCategory, string> = {
+  gpus: "显卡 PCI",
+  network: "网卡 PCI",
+  audio: "音频 PCI",
+  storage: "存储 PCI",
+};
+
+const appVersion = "0.1.15";
 
 function deviceIdentityCopy(device: HardwareReport["gpus"][number] | undefined): string {
   if (!device) return "----:----";
@@ -257,9 +294,13 @@ function App() {
   const [intelClockMode, setIntelClockMode] = useState<"awac" | "manual" | undefined>(undefined);
   const [intelClockEvidence, setIntelClockEvidence] = useState<AcpiClockEvidence | null>(null);
   const [unsupportedGpuMode, setUnsupportedGpuMode] = useState<"disable" | "preserve">("disable");
-  const [guideOpen, setGuideOpen] = useState(true);
+  const [guideOpen, setGuideOpen] = useState<boolean>(deliveryPresentation.initialGuideOpen);
   const [scanState, setScanState] = useState<"ready" | "scanning" | "complete">("complete");
   const [hardware, setHardware] = useState<HardwareReport>(sampleHardware);
+  const [baseHardware, setBaseHardware] = useState<HardwareReport>(sampleHardware);
+  const [hardwareOverrideDraft, setHardwareOverrideDraft] = useState<HardwareOverrideDraft>(emptyHardwareOverrideDraft);
+  const [hardwareOverrideError, setHardwareOverrideError] = useState<string | null>(null);
+  const [undoHardware, setUndoHardware] = useState<HardwareReport | null>(null);
   const [scanSource, setScanSource] = useState<HardwareReportSource>("demo");
   const [scanError, setScanError] = useState<string | null>(null);
   const [reportNotice, setReportNotice] = useState<string | null>(null);
@@ -287,11 +328,16 @@ function App() {
   const [verificationNotes, setVerificationNotes] = useState("");
   const [verificationChecks, setVerificationChecks] = useState<Partial<VerificationObservations>>({});
   const [verificationReview, setVerificationReview] = useState<string | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<CacheStatus | null>(null);
+  const [cacheError, setCacheError] = useState<string | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
   const reportInputRef = useRef<HTMLInputElement>(null);
   const verificationInputRef = useRef<HTMLInputElement>(null);
   const workflowHeadingRef = useRef<HTMLHeadingElement>(null);
   const previousWorkflowStepRef = useRef<WorkflowStep>(workflowStep);
   const workflowEpochRef = useRef(0);
+  const artifactLifecycleRef = useRef(createWorkflowArtifactLifecycle());
+  const cacheRequestRef = useRef(0);
   const hasNativeRuntime = nativeRuntimeAvailable();
 
   useEffect(() => {
@@ -303,6 +349,11 @@ function App() {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return;
+    void refreshCacheStatus();
+  }, [hasNativeRuntime]);
 
   useEffect(() => {
     if (previousWorkflowStepRef.current === workflowStep) return;
@@ -382,6 +433,7 @@ function App() {
     : null;
   const verificationEligible = Boolean(
     verificationBinding
+      && isWorkflowArtifactCurrent(artifactLifecycleRef.current, activeEfiSource)
       && (scanSource === "native" || scanSource === "imported")
       && (activeEfiSource === "generated" || activeEfiSource === "component-merged"),
   );
@@ -448,7 +500,7 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function resetBuildOutputs() {
+  function clearBuildOutputs() {
     workflowEpochRef.current += 1;
     setAssemblyError(null);
     setScaffoldResult(null);
@@ -463,23 +515,85 @@ function App() {
     setVerificationReview(null);
   }
 
+  function invalidateWorkflowInput() {
+    artifactLifecycleRef.current = changeWorkflowInput(artifactLifecycleRef.current);
+    clearBuildOutputs();
+  }
+
+  function invalidateWorkflowPlan() {
+    artifactLifecycleRef.current = changeWorkflowPlan(artifactLifecycleRef.current);
+    clearBuildOutputs();
+  }
+
+  function beginTrackedOperation(operation: WorkflowOperation): WorkflowRevisionToken {
+    const started = beginWorkflowOperation(artifactLifecycleRef.current, operation);
+    artifactLifecycleRef.current = started.state;
+    return started.token;
+  }
+
+  function acceptsTrackedResult(token: WorkflowRevisionToken): boolean {
+    return canAcceptWorkflowResult(artifactLifecycleRef.current, token);
+  }
+
+  function finishTrackedOperation(token: WorkflowRevisionToken) {
+    artifactLifecycleRef.current = finishWorkflowOperation(artifactLifecycleRef.current, token);
+  }
+
+  function bindTrackedArtifact(token: WorkflowRevisionToken, source: WorkflowArtifactSource) {
+    artifactLifecycleRef.current = bindWorkflowArtifact(artifactLifecycleRef.current, token, source);
+  }
+
+  async function refreshCacheStatus() {
+    const request = ++cacheRequestRef.current;
+    try {
+      const status = await getCacheStatus();
+      if (request !== cacheRequestRef.current) return;
+      setCacheStatus(status);
+      setCacheError(null);
+    } catch (error) {
+      if (request !== cacheRequestRef.current) return;
+      setCacheError(formatOperationFailure("读取缓存状态失败", error));
+    }
+  }
+
+  async function chooseCacheLocation() {
+    setCacheBusy(true);
+    setCacheError(null);
+    const request = ++cacheRequestRef.current;
+    try {
+      const status = await selectCacheLocation();
+      if (request !== cacheRequestRef.current) {
+        void refreshCacheStatus();
+        return;
+      }
+      if (status) setCacheStatus(status);
+      setCacheBusy(false);
+    } catch (error) {
+      if (request !== cacheRequestRef.current) return;
+      setCacheError(formatOperationFailure("设置缓存位置失败", error));
+      setCacheBusy(false);
+    }
+  }
+
   async function runScan() {
     setScanState("scanning");
     setScanError(null);
     setReportNotice(null);
-    resetBuildOutputs();
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("hardware-input");
 
     try {
       if (hasNativeRuntime) {
         const nativeHardware = parseHardwareReport(await scanNativeHardware());
-        if (workflowEpoch !== workflowEpochRef.current) return;
+        if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
         setHardware(nativeHardware);
+        setBaseHardware(nativeHardware);
         setScanSource("native");
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 850));
-        if (workflowEpoch !== workflowEpochRef.current) return;
+        if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
         setHardware(sampleHardware);
+        setBaseHardware(sampleHardware);
         setScanSource("demo");
       }
       setUsbMap(null);
@@ -487,11 +601,17 @@ function App() {
       setIntelClockMode(undefined);
       setIntelClockEvidence(null);
       setUnsupportedGpuMode("disable");
+      setHardwareOverrideDraft(emptyHardwareOverrideDraft());
+      setHardwareOverrideError(null);
+      setUndoHardware(null);
+      artifactLifecycleRef.current = acceptWorkflowInputResult(artifactLifecycleRef.current, operationToken);
+      clearBuildOutputs();
       setScanState("complete");
       setWorkflowStep(hasNativeRuntime ? 2 : 1);
       if (hasNativeRuntime) setGuideOpen(false);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setScanError(error instanceof Error ? error.message : String(error));
       setScanState("ready");
       setWorkflowStep(1);
@@ -514,25 +634,32 @@ function App() {
 
     setScanError(null);
     setReportNotice(null);
-    resetBuildOutputs();
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("hardware-input");
     try {
       if (file.size > 1024 * 1024) throw new Error("硬件报告不能超过 1 MB。");
       const imported = parseHardwareReport(JSON.parse(await file.text()));
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       setHardware(imported);
+      setBaseHardware(imported);
       setUsbMap(null);
       setAmdSetupVirtualMap(undefined);
       setIntelClockMode(undefined);
       setIntelClockEvidence(null);
       setUnsupportedGpuMode("disable");
+      setHardwareOverrideDraft(emptyHardwareOverrideDraft());
+      setHardwareOverrideError(null);
+      setUndoHardware(null);
+      artifactLifecycleRef.current = acceptWorkflowInputResult(artifactLifecycleRef.current, operationToken);
+      clearBuildOutputs();
       setScanSource("imported");
       setScanState("complete");
       setWorkflowStep(2);
       setGuideOpen(false);
       setReportNotice(`已导入 ${imported.board.vendor} ${imported.board.model} 的脱敏报告。`);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setScanError(`报告导入失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -540,18 +667,76 @@ function App() {
   function loadFixture(fixtureId: string) {
     const fixture = hardwareFixtures.find((candidate) => candidate.id === fixtureId);
     if (!fixture) return;
-    setHardware(parseHardwareReport(fixture.report));
+    const parsedFixture = parseHardwareReport(fixture.report);
+    setHardware(parsedFixture);
+    setBaseHardware(parsedFixture);
     setUsbMap(null);
     setAmdSetupVirtualMap(undefined);
     setIntelClockMode(undefined);
     setIntelClockEvidence(null);
     setUnsupportedGpuMode("disable");
+    setHardwareOverrideDraft(emptyHardwareOverrideDraft());
+    setHardwareOverrideError(null);
+    setUndoHardware(null);
     setScanSource("fixture");
     setScanState("complete");
     setScanError(null);
-    resetBuildOutputs();
+    invalidateWorkflowInput();
     setWorkflowStep(2);
     setReportNotice(`已载入测试样本：${fixture.label}。${fixture.purpose}`);
+  }
+
+  function updateHardwareOverrideField<K extends Exclude<keyof HardwareOverrideDraft, "devicesJson">>(
+    field: K,
+    value: HardwareOverrideDraft[K],
+  ) {
+    setHardwareOverrideDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateHardwareOverrideDevices(category: OverrideDeviceCategory, value: string) {
+    setHardwareOverrideDraft((current) => ({
+      ...current,
+      devicesJson: { ...current.devicesJson, [category]: value },
+    }));
+  }
+
+  function applyManualHardwareEdit() {
+    try {
+      const edited = applyHardwareOverrides(
+        baseHardware,
+        hardwareOverrideDraft,
+        scanSource === "native" ? "scanned" : "imported",
+      );
+      setUndoHardware(hardware);
+      setHardware(edited);
+      setHardwareOverrideError(null);
+      invalidateWorkflowInput();
+      setReportNotice(
+        `已应用 ${edited.provenance?.manualFields.length ?? 0} 项用户补充；这些值标为 user-provided，不会冒充扫描证据。`,
+      );
+    } catch (error) {
+      setHardwareOverrideError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function restoreBaseHardware() {
+    if (!hasManualHardwareOverrides(hardware)) return;
+    setUndoHardware(hardware);
+    setHardware(baseHardware);
+    setHardwareOverrideDraft(emptyHardwareOverrideDraft());
+    setHardwareOverrideError(null);
+    invalidateWorkflowInput();
+    setReportNotice("已恢复原始扫描/导入值；基于手工补充生成的下游结果已失效。");
+  }
+
+  function undoManualHardwareEdit() {
+    if (!undoHardware) return;
+    const previous = hardware;
+    setHardware(undoHardware);
+    setUndoHardware(previous);
+    setHardwareOverrideError(null);
+    invalidateWorkflowInput();
+    setReportNotice("已撤销最近一次硬件编辑；下游结果已按恢复后的输入重新计算。");
   }
 
   function exportManifest() {
@@ -595,15 +780,16 @@ function App() {
     }
     setAssemblyBusy("scaffold");
     setAssemblyError(null);
-    setMergeResult(null);
-    setComponentScan(null);
-    setComponentActions({});
-    setComponentMergeResult(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("build");
     try {
       const result = await buildEfiScaffold(buildManifest, usbMap?.sourcePath);
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
+        setMergeResult(null);
+        setComponentScan(null);
+        setComponentActions({});
+        setComponentMergeResult(null);
         setCopyResult(null);
         setVerificationReview(null);
         setScaffoldResult(result);
@@ -617,15 +803,18 @@ function App() {
             configSha256: result.configSha256,
           });
           setActiveEfiSource("generated");
+          bindTrackedArtifact(operationToken, "generated");
           setReportNotice(`候选 EFI 已生成并通过同版本 ocvalidate：${result.outputPath}`);
         } else {
           setEfiValidation(null);
           setActiveEfiSource(null);
+          artifactLifecycleRef.current = discardWorkflowArtifact(artifactLifecycleRef.current, operationToken);
           setReportNotice(`官方组件暂存包已生成：${result.outputPath}`);
         }
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("暂存包生成失败", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
@@ -639,16 +828,18 @@ function App() {
     }
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("usb-map-import");
     try {
       const result = await selectUsbMap();
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
         setUsbMap(result);
-        resetBuildOutputs();
+        invalidateWorkflowPlan();
         setReportNotice(`已选择 ${result.bundleName}；构建时会安全复制，不会修改源文件。`);
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("USB Map 拒绝导入", error));
     }
   }
@@ -661,21 +852,23 @@ function App() {
     setAssemblyBusy("acpi-analyze");
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("acpi-analysis");
     try {
       const result = await selectAcpiClockEvidence();
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
         setIntelClockEvidence(result);
-        resetBuildOutputs();
-        // resetBuildOutputs invalidates the operation epoch. Clear the busy state
+        invalidateWorkflowPlan();
+        // Plan invalidation also advances the operation epoch. Clear the busy state
         // here so a successful DSDT analysis cannot leave the workflow locked.
         setAssemblyBusy(null);
         setReportNotice(
           `DSDT 结构与校验和通过，已记录 ${result.confidence === "strong-clue" ? "强线索" : result.confidence === "possible-clue" ? "可能线索" : "证据不足"}；建议尚未自动应用。`,
         );
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("DSDT 分析已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
@@ -685,7 +878,7 @@ function App() {
   function applyAcpiClockSuggestion() {
     if (!intelClockEvidence) return;
     setIntelClockMode(intelClockEvidence.suggestedMode);
-    resetBuildOutputs();
+    invalidateWorkflowPlan();
     setReportNotice(
       `已由用户应用 DSDT 静态建议：${intelClockEvidence.suggestedMode === "awac" ? "预编译 AWAC 候选" : "手动 RTC0 / SSDTTime 路径"}。`,
     );
@@ -699,23 +892,30 @@ function App() {
     setAssemblyBusy("validate");
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("custom-import");
     try {
       const result = await validateCustomEfi();
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
         setCustomEfiValidation(result);
-        setEfiValidation(result);
-        setActiveEfiSource("custom");
-        setMergeResult(null);
-        setCopyResult(null);
+        if (result.valid) {
+          setEfiValidation(result);
+          setActiveEfiSource("custom");
+          bindTrackedArtifact(operationToken, "custom");
+          setMergeResult(null);
+          setCopyResult(null);
+        } else {
+          finishTrackedOperation(operationToken);
+        }
         setReportNotice(
           result.valid
             ? `EFI 仅结构检查通过（未执行 ocvalidate）：${result.rootPath}`
             : `EFI 结构校验未通过，共发现 ${result.errors.length} 个必须修复的问题。`,
         );
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("EFI 校验失败", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
@@ -730,13 +930,14 @@ function App() {
     setAssemblyBusy("merge");
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("merge");
     try {
       const result = await mergeEfiSources(
         scaffoldResult.outputPath,
         customEfiValidation.rootPath,
         mergePreference,
       );
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
         setMergeResult(result);
         setEfiValidation({
@@ -748,11 +949,13 @@ function App() {
           configSha256: result.configSha256,
         });
         setActiveEfiSource("merged");
+        bindTrackedArtifact(operationToken, "merged");
         setCopyResult(null);
         setReportNotice(`融合 EFI 副本已生成并通过结构检查：${result.outputPath}`);
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("EFI 融合已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
@@ -776,6 +979,7 @@ function App() {
       configSha256: scaffoldResult.configSha256,
     });
     setActiveEfiSource("generated");
+    artifactLifecycleRef.current = replaceWorkflowArtifact(artifactLifecycleRef.current, "generated");
   }
 
   async function scanUserComponents(selectionMode: "folder" | "files") {
@@ -786,18 +990,21 @@ function App() {
     setAssemblyBusy("component-scan");
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("component-scan");
     try {
       const result = await selectComponentSource(selectionMode, scaffoldResult.outputPath);
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
         setComponentScan(result);
         setComponentActions(createDefaultComponentActions(result.items));
         setComponentMergeResult(null);
+        finishTrackedOperation(operationToken);
         if (activeEfiSource === "component-merged") restoreGeneratedCandidate();
         setReportNotice(`已只读扫描 ${result.items.length} 个用户组件；请逐项选择处理方式。`);
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("组件导入已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
@@ -822,13 +1029,14 @@ function App() {
     setAssemblyBusy("component-merge");
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("component-merge");
     try {
       const result = await mergeComponentSelections(
         componentScan.scanId,
         scaffoldResult.outputPath,
         selections,
       );
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       if (result) {
         setComponentMergeResult(result);
         setMergeResult(null);
@@ -841,11 +1049,13 @@ function App() {
           configSha256: result.configAfterSha256,
         });
         setActiveEfiSource("component-merged");
+        bindTrackedArtifact(operationToken, "component-merged");
         setCopyResult(null);
         setReportNotice(`组件融合副本已生成：${result.outputPath}`);
-      }
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("组件融合已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setAssemblyBusy(null);
@@ -853,7 +1063,7 @@ function App() {
   }
 
   function continueToCopyTest() {
-    if (!efiValidation?.valid) {
+    if (!efiValidation?.valid || !isWorkflowArtifactCurrent(artifactLifecycleRef.current, activeEfiSource)) {
       setAssemblyError("只有结构完整的 EFI 才能进入复制与测试步骤。兼容性警告不会阻止这里，但结构损坏会停止。");
       return;
     }
@@ -872,7 +1082,7 @@ function App() {
         verificationBinding,
         verificationStage,
         verificationResult,
-        observationsForStage(verificationStage, verificationResult, verificationChecks),
+        initializeVerificationObservations(verificationChecks),
         verificationNotes.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       );
       downloadJson(
@@ -891,35 +1101,45 @@ function App() {
     if (!file || !verificationBinding) return;
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("verification-import");
     try {
       if (file.size > 64 * 1024) throw new Error("验证证据不能超过 64 KB。");
       const evidence = parseVerificationEvidence(JSON.parse(await file.text()));
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
       const mismatches = verifyEvidenceBinding(evidence, verificationBinding);
       if (mismatches.length > 0) {
         setVerificationReview(`证据未绑定当前 EFI：${mismatches.join("、")}。不会提升验证阶段。`);
+        finishTrackedOperation(operationToken);
       } else if (mayPromoteVerification(evidence, verificationBinding)) {
         setVerificationReview(`证据与当前 EFI 精确绑定：${verificationStageCopy[evidence.stage]}。这是一条用户实测记录，不等于项目官方推荐。`);
+        artifactLifecycleRef.current = bindWorkflowVerification(artifactLifecycleRef.current, operationToken);
       } else {
-        setVerificationReview(`证据与当前 EFI 精确绑定，但记录结果为失败：${verificationStageCopy[evidence.stage]}。`);
+        setVerificationReview(failedVerificationPresentation(verificationStageCopy[evidence.stage]));
+        artifactLifecycleRef.current = bindWorkflowVerification(artifactLifecycleRef.current, operationToken);
       }
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("验证证据导入失败", error));
     }
   }
 
   async function copyValidatedEfi() {
-    if (!efiValidation?.valid || !hasNativeRuntime) return;
+    if (!efiValidation?.valid || !hasNativeRuntime || !isWorkflowArtifactCurrent(artifactLifecycleRef.current, activeEfiSource)) return;
     setCopyBusy(true);
     setAssemblyError(null);
     const workflowEpoch = workflowEpochRef.current;
+    const operationToken = beginTrackedOperation("copy");
     try {
       const result = await copyEfiToEmptyTarget(efiValidation.rootPath);
-      if (workflowEpoch !== workflowEpochRef.current) return;
-      if (result) setCopyResult(result);
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      if (result) {
+        setCopyResult(result);
+        artifactLifecycleRef.current = bindWorkflowCopy(artifactLifecycleRef.current, operationToken);
+      } else finishTrackedOperation(operationToken);
     } catch (error) {
-      if (workflowEpoch !== workflowEpochRef.current) return;
+      if (workflowEpoch !== workflowEpochRef.current || !acceptsTrackedResult(operationToken)) return;
+      finishTrackedOperation(operationToken);
       setAssemblyError(formatOperationFailure("复制已停止", error));
     } finally {
       if (workflowEpoch === workflowEpochRef.current) setCopyBusy(false);
@@ -956,7 +1176,7 @@ function App() {
             EF
           </span>
           <div>
-            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.14</p>
+            <p className="eyebrow">FIRMWARE WORKBENCH / ALPHA 0.1.15</p>
             <h1>EFI Forge</h1>
           </div>
         </div>
@@ -970,7 +1190,7 @@ function App() {
             onChange={(event) => {
               setTargetMacOS(event.target.value as MacOSVersion);
               setWorkflowStep(scanSource === "demo" ? 1 : 2);
-              resetBuildOutputs();
+              invalidateWorkflowInput();
             }}
           >
             {Object.entries(macOSNames).map(([version, name]) => (
@@ -1103,12 +1323,87 @@ function App() {
             </section>
           )}
 
+          <details className="manual-hardware-panel">
+            <summary>
+              <span>高级：补充或修正硬件信息</span>
+              <small>用户提供 · 不会冒充扫描证据</small>
+            </summary>
+            <div className="manual-hardware-content">
+              <p>
+                仅在扫描缺失或明显错误时使用。留空表示保留原值；应用前会完整校验，错误不会改变当前报告。
+              </p>
+              <div className="manual-hardware-fields">
+                {([
+                  ["manufacturer", "整机厂商", "例如 LENOVO"],
+                  ["productName", "完整型号", "例如 ThinkPad T480"],
+                  ["machineType", "四位机型码", "例如 20L5"],
+                  ["boardVendor", "主板厂商", "例如 ASUSTeK COMPUTER INC."],
+                  ["boardModel", "主板型号", "例如 PRIME Z490-P"],
+                  ["biosVersion", "BIOS 版本", "按 BIOS 页面原样填写"],
+                ] as const).map(([field, label, placeholder]) => (
+                  <label key={field}>
+                    <span>{label}</span>
+                    <input
+                      value={hardwareOverrideDraft[field]}
+                      placeholder={placeholder}
+                      onChange={(event) => updateHardwareOverrideField(field, event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="manual-device-fields">
+                {(Object.keys(overrideDeviceLabels) as OverrideDeviceCategory[]).map((category) => (
+                  <label key={category}>
+                    <span>{overrideDeviceLabels[category]}</span>
+                    <small>
+                      JSON 数组；每项需要 id、name、四位 vendorId/deviceId，可选八位 subsystemId。整组替换该类别，身份标记为 user-provided。
+                    </small>
+                    <textarea
+                      rows={3}
+                      value={hardwareOverrideDraft.devicesJson[category]}
+                      placeholder='[{"id":"manual-0","name":"设备名称","vendorId":"8086","deviceId":"1234"}]'
+                      onChange={(event) => updateHardwareOverrideDevices(category, event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+              {hardwareOverrideError && <div className="readiness-blocker" role="alert">{hardwareOverrideError}</div>}
+              <div className="manual-hardware-actions">
+                <button type="button" className="build-button" onClick={applyManualHardwareEdit} disabled={workflowLocked}>
+                  校验并应用补充
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setHardwareOverrideDraft(emptyHardwareOverrideDraft());
+                    setHardwareOverrideError(null);
+                  }}
+                >
+                  取消本次填写
+                </button>
+                <button type="button" className="secondary-button" onClick={restoreBaseHardware} disabled={!hasManualHardwareOverrides(hardware) || workflowLocked}>
+                  恢复原始扫描值
+                </button>
+                <button type="button" className="secondary-button" onClick={undoManualHardwareEdit} disabled={!undoHardware || workflowLocked}>
+                  撤销最近一次编辑
+                </button>
+              </div>
+              <p className="manual-provenance-note">
+                当前来源：{hardwareEvidenceSummary.provenance === "manual"
+                  ? `用户补充（${hardwareEvidenceSummary.manualFieldCount} 项），本次会话底稿为 ${scanSource === "native" ? "本机扫描" : "导入/示例报告"}`
+                  : scanSource === "native" ? "本机扫描" : scanSource === "imported" ? "导入报告" : "演示/固定样本"}。
+                导出报告会保留覆盖字段及 user-provided 身份；恢复底稿仅保证当前会话可用。
+              </p>
+            </div>
+          </details>
+
           <section className="operation-guide" aria-labelledby="operation-guide-title">
             <header className="operation-guide-heading">
               <div>
                 <p className="eyebrow">FIRST RUN / SAFE PATH</p>
                 <h3 id="operation-guide-title">第一次使用，按这四步操作</h3>
-                <p>每一步都在新目录中进行；遇到硬件警告仍可继续，涉及结构损坏或数据风险才会停止。</p>
+                <p>{deliveryPresentation.safetyBoundary}</p>
               </div>
               <button
                 type="button"
@@ -1824,7 +2119,7 @@ function App() {
                           disabled={assemblyBusy !== null}
                           onChange={(event) => {
                             setAmdSetupVirtualMap(event.target.value === "enabled");
-                            resetBuildOutputs();
+                            invalidateWorkflowPlan();
                           }}
                           aria-label="AMD SetupVirtualMap"
                         >
@@ -1847,7 +2142,7 @@ function App() {
                             setIntelClockMode(
                               value === "auto" ? undefined : (value as "awac" | "manual"),
                             );
-                            resetBuildOutputs();
+                            invalidateWorkflowPlan();
                           }}
                           aria-label="Intel AWAC 或 RTC0 路径"
                         >
@@ -1905,7 +2200,7 @@ function App() {
                           disabled={assemblyBusy !== null}
                           onChange={(event) => {
                             setUnsupportedGpuMode(event.target.value as "disable" | "preserve");
-                            resetBuildOutputs();
+                            invalidateWorkflowPlan();
                           }}
                           aria-label="不兼容独显处理方式"
                         >
@@ -1988,6 +2283,27 @@ function App() {
                       <small>先完成 A 或 B；只有确实需要保留专属配置时再展开。</small>
                     </div>
                   </summary>
+                  <section className="cache-settings" aria-label="运行时缓存设置">
+                    <div>
+                      <strong>运行时缓存</strong>
+                      <p className="cache-path">{cacheStatus?.path ?? (hasNativeRuntime ? "正在读取…" : "仅桌面版可设置")}</p>
+                      <small>
+                        {cacheStatus
+                          ? `${cacheStatus.layoutVersion} · ${cacheStatus.availableBytes === null ? "可用空间未知" : `可用 ${(cacheStatus.availableBytes / 1024 ** 3).toFixed(1)} GB`} · ${cacheStatus.writable ? "可写" : "不可写"}`
+                          : "组件下载与原生校验临时文件使用同一受控位置。"}
+                      </small>
+                      {cacheStatus && <p>{cacheStatus.note}</p>}
+                      {cacheError && <p className="inline-error">{cacheError}</p>}
+                    </div>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={chooseCacheLocation}
+                      disabled={!hasNativeRuntime || cacheBusy}
+                    >
+                      {cacheBusy ? "正在选择…" : "选择新位置"}
+                    </button>
+                  </section>
                   <div className="advanced-build-grid">
                   <article className="component-source-path">
                     <span className="path-index">C</span>
@@ -2039,13 +2355,27 @@ function App() {
                               setMergeResult(null);
                               setCopyResult(null);
                               setVerificationReview(null);
+                              artifactLifecycleRef.current = clearWorkflowArtifactOutcomes(
+                                artifactLifecycleRef.current,
+                              );
+                              const fallbackSource = artifactAfterMergePreferenceChange(
+                                activeEfiSource,
+                                Boolean(customEfiValidation?.valid),
+                              );
                               if (activeEfiSource === "merged") {
-                                if (customEfiValidation?.valid) {
+                                if (fallbackSource === "custom" && customEfiValidation?.valid) {
                                   setEfiValidation(customEfiValidation);
                                   setActiveEfiSource("custom");
+                                  artifactLifecycleRef.current = replaceWorkflowArtifact(
+                                    artifactLifecycleRef.current,
+                                    "custom",
+                                  );
                                 } else {
                                   setEfiValidation(null);
                                   setActiveEfiSource(null);
+                                  artifactLifecycleRef.current = clearWorkflowArtifact(
+                                    artifactLifecycleRef.current,
+                                  );
                                 }
                               }
                               setReportNotice("融合冲突优先级已经变化；需要重新生成融合副本后再进入复制与测试。");
@@ -2403,7 +2733,7 @@ function App() {
       </div>
 
       <footer>
-        <span>EFI Forge v0.1.14-dev</span>
+        <span>EFI Forge v0.1.15-dev</span>
         <p>
           非 Apple 官方工具 · 当前数据来自{sourceCopy[scanSource]}
         </p>

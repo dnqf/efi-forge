@@ -108,16 +108,14 @@ function validateStageResult(evidence: VerificationEvidence): void {
   }
 }
 
-export function observationsForStage(
-  _stage: CompletedVerificationStage,
-  _result: "passed" | "failed",
-  optional: Partial<VerificationObservations> = {},
+export function initializeVerificationObservations(
+  explicit: Partial<VerificationObservations> = {},
 ): VerificationObservations {
   const observations = Object.fromEntries(
     observationKeys.map((key) => [key, "not-tested"]),
   ) as unknown as VerificationObservations;
   for (const key of observationKeys) {
-    if (optional[key]) observations[key] = optional[key];
+    if (explicit[key]) observations[key] = explicit[key];
   }
   return observations;
 }
@@ -198,8 +196,13 @@ export function verifyEvidenceBinding(
 }
 
 export function mayPromoteVerification(
-  evidence: VerificationEvidence,
+  evidence: unknown,
   binding: VerificationBinding,
 ): boolean {
-  return evidence.result === "passed" && verifyEvidenceBinding(evidence, binding).length === 0;
+  try {
+    const parsed = parseVerificationEvidence(evidence);
+    return parsed.result === "passed" && verifyEvidenceBinding(parsed, binding).length === 0;
+  } catch {
+    return false;
+  }
 }

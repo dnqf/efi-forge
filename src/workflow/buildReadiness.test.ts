@@ -19,6 +19,7 @@ describe("build readiness", () => {
 
     expect(readiness.mode).toBe("auto-candidate");
     expect(readiness.canContinue).toBe(true);
+    expect(readiness.evidenceGaps.some((gap) => gap.id === "pci-identity")).toBe(false);
     expect(readiness.routes.map((route) => [route.id, route.status])).toEqual([
       ["project-candidate", "ready"],
       ["user-efi", "available"],
@@ -91,5 +92,40 @@ describe("build readiness", () => {
     expect(readiness.canContinue).toBe(false);
     expect(readiness.blockingReason).toContain("结构或完整性");
     expect(readiness.routes.every((route) => route.status === "blocked")).toBe(true);
+  });
+
+  it("reports parent PCI controller clues as insufficient without blocking manual routes", () => {
+    const hardware: HardwareReport = {
+      ...sampleHardware,
+      network: [{
+        id: "network-parent",
+        name: "Network Controller",
+        vendorId: "8086",
+        deviceId: "2723",
+        identitySource: "parent-pci",
+      }],
+    };
+    const readiness = readinessFor(hardware);
+
+    expect(readiness.evidenceGaps.find((gap) => gap.id === "pci-identity")?.label).toContain("1 个");
+    expect(readiness.canContinue).toBe(true);
+    expect(readiness.routes.find((route) => route.id === "user-efi")?.status).toBe("available");
+    expect(readiness.routes.find((route) => route.id === "component-merge")?.status).toBe("available");
+  });
+
+  it("does not trust PCI-looking fields when the report marks them as name-only", () => {
+    const readiness = readinessFor({
+      ...sampleHardware,
+      network: [{
+        id: "network-name-only",
+        name: "Network Controller",
+        vendorId: "8086",
+        deviceId: "2723",
+        identitySource: "name-only",
+      }],
+    });
+
+    expect(readiness.evidenceGaps.find((gap) => gap.id === "pci-identity")?.label).toContain("1 个");
+    expect(readiness.canContinue).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import type {
   HardwareModuleAssessment,
   HardwareReport,
 } from "../domain/types";
+import { classifyNetworkDevice } from "./deviceIdentity";
 
 function aggregate(findings: CompatibilityFinding[]): CompatibilityStatus {
   if (findings.some((finding) => finding.status === "blocked")) return "blocked";
@@ -15,10 +16,6 @@ function aggregate(findings: CompatibilityFinding[]): CompatibilityStatus {
 
 function evidence(findings: CompatibilityFinding[]): string[] {
   return findings.map((finding) => `${finding.subject} · ${finding.ruleId}`);
-}
-
-function isWireless(name: string): boolean {
-  return /wireless|wi-?fi|wlan|802\.11/i.test(name);
 }
 
 function clueStatus(present: boolean, desktop: boolean): CompatibilityStatus {
@@ -33,11 +30,17 @@ export function evaluateHardwareModules(
   const byCategory = (category: CompatibilityFinding["category"]) =>
     findings.filter((finding) => finding.category === category);
   const networkFindings = byCategory("network");
+  const networkKinds = new Map(
+    hardware.network.map((device) => [device.id, classifyNetworkDevice(device).kind]),
+  );
   const wirelessIds = new Set(
-    hardware.network.filter((device) => isWireless(device.name)).map((device) => device.id),
+    hardware.network.filter((device) => networkKinds.get(device.id) === "wireless").map((device) => device.id),
+  );
+  const ethernetIds = new Set(
+    hardware.network.filter((device) => networkKinds.get(device.id) === "ethernet").map((device) => device.id),
   );
   const wirelessFindings = networkFindings.filter((finding) => wirelessIds.has(finding.subjectId));
-  const ethernetFindings = networkFindings.filter((finding) => !wirelessIds.has(finding.subjectId));
+  const ethernetFindings = networkFindings.filter((finding) => ethernetIds.has(finding.subjectId));
   const gpuFindings = byCategory("gpu");
   const hasSupportedGpu = gpuFindings.some((finding) => finding.status === "supported");
   const supportedGpuIds = new Set(

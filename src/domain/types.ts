@@ -28,7 +28,7 @@ export interface PciDevice {
   parentVendorId?: string;
   parentDeviceId?: string;
   parentClassCode?: string;
-  identitySource?: "direct-pci" | "parent-pci" | "name-only";
+  identitySource?: "direct-pci" | "parent-pci" | "name-only" | "user-provided";
 }
 
 export interface HardwareEvidence {
@@ -83,6 +83,10 @@ export interface HardwareReport {
   audio: PciDevice[];
   storage: PciDevice[];
   evidence?: HardwareEvidence;
+  provenance?: {
+    baseSource: "scanned" | "imported";
+    manualFields: string[];
+  };
 }
 
 export interface RuleSelector {

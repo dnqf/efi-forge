@@ -1,3 +1,4 @@
+use crate::cache;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -622,10 +623,10 @@ fn assemble_scaffold(
         fs::create_dir_all(directory).map_err(|error| format!("无法创建 EFI 目录结构：{error}"))?;
     }
 
-    let cache = std::env::temp_dir()
-        .join("efi-forge")
-        .join("component-cache");
-    fs::create_dir_all(&cache).map_err(|error| format!("无法创建组件缓存：{error}"))?;
+    // One operation keeps one immutable cache-root snapshot. A concurrent settings
+    // change therefore affects only later operations, never half of this one.
+    let cache_root = cache::managed_root()?;
+    let cache = cache::component_cache_in(&cache_root)?;
 
     let mut files_written = 0;
     let requested_kexts: BTreeSet<&str> = manifest
@@ -1407,20 +1408,16 @@ pub(crate) fn run_locked_ocvalidate(root: &Path) -> Result<(), String> {
         .iter()
         .find(|component| component.id == "opencore")
         .ok_or_else(|| "组件锁中缺少 OpenCore。".to_string())?;
-    let cache = std::env::temp_dir()
-        .join("efi-forge")
-        .join("component-cache");
-    fs::create_dir_all(&cache).map_err(|error| format!("无法创建组件缓存：{error}"))?;
+    // Bind both the component archive and validator scratch directory to one
+    // root snapshot so a settings change cannot split this operation.
+    let cache_root = cache::managed_root()?;
+    let cache = cache::component_cache_in(&cache_root)?;
     let archive_path = ensure_component(&cache, component)?;
     let archive_file = File::open(&archive_path)
         .map_err(|error| format!("无法打开已验证的 OpenCore 组件：{error}"))?;
     let mut archive = ZipArchive::new(archive_file)
         .map_err(|error| format!("已验证的 OpenCore 组件无法解压：{error}"))?;
-    let validator_root = std::env::temp_dir()
-        .join("efi-forge")
-        .join(format!("ocvalidate-{}", Uuid::new_v4()));
-    fs::create_dir_all(&validator_root)
-        .map_err(|error| format!("无法创建 ocvalidate 暂存目录：{error}"))?;
+    let validator_root = cache::unique_temp_in(&cache_root, "ocvalidate")?;
     let validator = validator_root.join("ocvalidate.exe");
     let result = (|| -> Result<(), String> {
         extract_file(
@@ -1562,6 +1559,7 @@ fn ensure_component(cache: &Path, component: &LockedComponent) -> Result<PathBuf
     if destination.is_file() && verify_file(&destination, component)? {
         return Ok(destination);
     }
+    cache::ensure_download_space(cache, component.size)?;
     let rejected_cache = destination.exists();
 
     let partial = cache.join(format!("{}.{}.part", component.asset_name, Uuid::new_v4()));

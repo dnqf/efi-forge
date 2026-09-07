@@ -2,31 +2,31 @@
 
 EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工作台。它通过硬件扫描、可追溯的兼容性规则和固定版本的可信上游组件，为目标电脑生成候选 EFI 构建计划。
 
-当前公开测试版为 `v0.1.12 Alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据、转移/求助摘要和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
+当前公开测试版为 `v0.1.15 Alpha`：已经具备 Windows 原生桌面壳、本机只读硬件扫描、可撤销的用户硬件补充、ThinkPad 专项路由、社区机型线索索引、模块化兼容性判断、锁定组件下载、候选 EFI 组装、自有 EFI 校验、安全融合副本、受控组件配置、ACPI 时钟静态证据、真机验证证据、可选运行时缓存位置、转移/求助摘要和向空目录复制。工具不会格式化磁盘，也不会覆盖非空目录。
 
-`v0.1.12` 是预发布测试版，不代表任意硬件可以安装成功；下载、哈希和已知边界以 Release 页为准。
+`v0.1.15` 是预发布测试版，不代表任意硬件可以安装成功；下载、哈希和已知边界以 Release 页为准。
 
-源码候选现为 `v0.1.14 Alpha`，包含 Hardware Evidence 2.0、型号匹配与指纹修复、笔记本/台式机配置隔离和显式真机观察项。候选构建不等于公开发布，也不会扩大未审核自动 EFI 范围。详见 [v0.1.14 改进记录](docs/RELEASE_NOTES_v0.1.14.zh-CN.md)。
+源码与公开候选现为 `v0.1.15 Alpha`。本轮加入统一设备身份、可执行规则案例、产物 revision/token、手工硬件来源隔离、运行时缓存治理和 12 类合成配置证据矩阵；没有扩大未审核自动 EFI 范围。详见 [v0.1.15 改进记录](docs/RELEASE_NOTES_v0.1.15.zh-CN.md)。
 
 项目主页：[github.com/dnqf/efi-forge](https://github.com/dnqf/efi-forge)
 
 ## 下载
 
-- 版本说明：[EFI Forge v0.1.12 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.12)
-- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/EFI.Forge_0.1.12_x64-setup.exe)
-- 校验文件：[SHA256SUMS.txt](https://github.com/dnqf/efi-forge/releases/download/v0.1.12/SHA256SUMS.txt)
-- 本地新候选：v0.1.14；请以 GitHub Release 实际存在的标签与资产为准，不把本地版本号当作公开下载地址。
-- 历史版本：[v0.1.10](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)、[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)、[v0.1.5](https://github.com/dnqf/efi-forge/releases/tag/v0.1.5)
+- 版本说明与安装包：[EFI Forge v0.1.15 Alpha](https://github.com/dnqf/efi-forge/releases/tag/v0.1.15)
+- Windows x64：[直接下载安装包](https://github.com/dnqf/efi-forge/releases/download/v0.1.15/EFI%20Forge_0.1.15_x64-setup.exe)
+- 校验文件：[SHA256SUMS.txt](https://github.com/dnqf/efi-forge/releases/download/v0.1.15/SHA256SUMS.txt)
+- 历史版本：[v0.1.12](https://github.com/dnqf/efi-forge/releases/tag/v0.1.12)、[v0.1.10](https://github.com/dnqf/efi-forge/releases/tag/v0.1.10)、[v0.1.9](https://github.com/dnqf/efi-forge/releases/tag/v0.1.9)
 
 不要使用来源不明的 GitHub 加速站。安装后仍应核对安装程序哈希；当前 Alpha 尚未数字签名，Windows 可能显示未知发布者。
 
-- EXE SHA-256：`C1F64E886B376A1DC1F9298D0ED06DA2703300C1E85FE5BAB73ED3A1F46F386A`
+安装包的 SHA-256 以同一 Release 中的 `SHA256SUMS.txt` 为准；不要使用其他站点生成的临时加速链接。
 
 ## 当前能力
 
 - 通过 Windows CIM/注册表只读扫描 CPU、主板、固件、GPU、网络、音频和存储
 - 在 Tauri 桌面应用中展示本机脱敏硬件报告
 - 导入和导出经过白名单清洗的硬件报告，以便在其他电脑上采集、在开发机上分析
+- 可在高级入口补充厂商、完整型号、机型码、主板、BIOS 和 PCI 设备；手工值带 `user-provided` 来源，不会冒充本机扫描证据或取得自动配置资格
 - 逐项评估 CPU、GPU、主板、网络和存储兼容性
 - 对 ThinkPad 读取四位 Machine Type，按型号/CPU 代际/显卡/无线/存储/BIOS 建立专项候选路径
 - 覆盖 Ivy Bridge 到 Comet Lake 常见 ThinkPad 系列的分层目录；未收录型号进入研究路径但不会被阻止
@@ -36,6 +36,7 @@ EFI Forge 是一个 Windows-first 的 OpenCore 配置、校验与安全复制工
 - 输出带规则 ID、证据和建议动作的构建计划
 - 使用可构建与必须阻止的固定硬件样本验证规则引擎
 - 锁定 OpenCore、常见 Kext 与审核 ACPI 的版本、资产大小和 SHA-256
+- 可查看并切换 EFI Forge 自有运行时缓存位置；新任务固定使用一个版本化根目录，低空间、损坏缓存、重解析点和危险目录会被拒绝，旧缓存不会自动迁移或删除
 - 导出确定性的候选 EFI 构建清单，并显示静态验证与实机验证闸门
 - 为已审核的 AMD B450、Intel Coffee Lake / Comet Lake 台式机组合生成 config.plist 并运行同版本 `ocvalidate`
 - 可只读校验用户选择的 `DSDT.aml`，记录 ACPI000E/PNP0B00/STAS 静态线索与 SHA-256，并由用户显式决定 AWAC 或手动 RTC0 路径；该能力只提供静态字节线索，不等于 ACPI 语义或实机验证

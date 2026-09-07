@@ -1,5 +1,6 @@
 mod acpi;
 mod builder;
+mod cache;
 mod components;
 mod hardware;
 
@@ -7,6 +8,7 @@ mod hardware;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            cache::initialize(app.handle()).map_err(std::io::Error::other)?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -24,6 +26,8 @@ pub fn run() {
             builder::validate_custom_efi,
             builder::merge_efi_sources,
             builder::copy_efi_to_empty_target,
+            cache::get_cache_status,
+            cache::select_cache_location,
             components::select_component_source,
             components::merge_component_selections,
         ])

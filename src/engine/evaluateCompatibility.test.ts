@@ -763,6 +763,53 @@ describe("compatibility engine", () => {
     expect(plan?.components).not.toContain("AirportItlwm.kext");
   });
 
+  it("keeps network rule and module classification stable across display names and Tahoe", () => {
+    const wireless = {
+      ...sampleHardware,
+      network: [{
+        id: "network-ax200",
+        name: "Network Controller",
+        vendorId: "8086",
+        deviceId: "2723",
+      }],
+    };
+    const tahoeReport = evaluateCompatibility(wireless, "26", compatibilityRules);
+    expect(tahoeReport.findings.find((finding) => finding.subjectId === "network-ax200")?.ruleId).toBe(
+      "network.intel.wireless-tahoe.manual",
+    );
+    expect(tahoeReport.modules.find((module) => module.id === "wireless")?.evidence).toHaveLength(1);
+    expect(tahoeReport.modules.find((module) => module.id === "ethernet")?.evidence).toHaveLength(0);
+
+    const ethernet = {
+      ...sampleHardware,
+      network: [{
+        id: "network-i211",
+        name: "Intel Wi-Fi Adapter",
+        vendorId: "8086",
+        deviceId: "1539",
+      }],
+    };
+    const ethernetReport = evaluateCompatibility(ethernet, "14", compatibilityRules);
+    expect(ethernetReport.modules.find((module) => module.id === "ethernet")?.evidence).toHaveLength(1);
+    expect(ethernetReport.modules.find((module) => module.id === "wireless")?.evidence).toHaveLength(0);
+  });
+
+  it("does not present an unclassified network device as ethernet", () => {
+    const hardware = {
+      ...sampleHardware,
+      network: [{
+        id: "network-unknown",
+        name: "Network Controller",
+        vendorId: "FFFF",
+        deviceId: "0001",
+      }],
+    };
+    const report = evaluateCompatibility(hardware, "14", compatibilityRules);
+
+    expect(report.modules.find((module) => module.id === "ethernet")?.evidence).toHaveLength(0);
+    expect(report.modules.find((module) => module.id === "wireless")?.evidence).toHaveLength(0);
+  });
+
   it("adds locked NVMeFix for detected NVMe storage while preserving model risk warnings", () => {
     const hardware = {
       ...sampleHardware,

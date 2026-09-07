@@ -3,7 +3,8 @@ import type { HardwareEvidence, HardwareReport, PciDevice } from "../domain/type
 const reportKinds = ["desktop", "laptop"] as const;
 const firmwareKinds = ["uefi", "legacy"] as const;
 const cpuVendors = ["intel", "amd", "unknown"] as const;
-const identitySources = ["direct-pci", "parent-pci", "name-only"] as const;
+const identitySources = ["direct-pci", "parent-pci", "name-only", "user-provided"] as const;
+const provenanceSources = ["scanned", "imported"] as const;
 const storageModes = ["ahci", "raid-vmd", "unknown"] as const;
 
 type JsonObject = Record<string, unknown>;
@@ -276,6 +277,15 @@ export function parseHardwareReport(value: unknown): HardwareReport {
     evidence: root.schemaVersion === 2
       ? hardwareEvidenceAt(root.evidence, "evidence")
       : undefined,
+    provenance: root.provenance === undefined
+      ? undefined
+      : (() => {
+          const provenance = objectAt(root.provenance, "provenance");
+          return {
+            baseSource: enumAt(provenance.baseSource, provenanceSources, "provenance.baseSource"),
+            manualFields: stringArrayAt(provenance.manualFields, "provenance.manualFields"),
+          };
+        })(),
   };
   assertUniqueDeviceIds([
     { path: "gpus", devices: report.gpus },

@@ -4,7 +4,7 @@ import { compatibilityRules } from "../data/rules";
 import { evaluateCompatibility } from "../engine/evaluateCompatibility";
 import { createBuildPlan } from "../engine/createBuildPlan";
 import { createHardwareFingerprint } from "../build/createEfiManifest";
-import { observationsForStage } from "../feedback/verificationEvidence";
+import { initializeVerificationObservations } from "../feedback/verificationEvidence";
 
 describe("cross-layer audit regressions", () => {
   it("keeps instruction-set risks manual without blocking user continuation", () => {
@@ -62,6 +62,6 @@ describe("cross-layer audit regressions", () => {
   });
 
   it("requires explicit observations instead of manufacturing successful milestones", () => {
-    expect(Object.values(observationsForStage("post-install-verified", "passed"))).toEqual(Array(9).fill("not-tested"));
+    expect(Object.values(initializeVerificationObservations())).toEqual(Array(9).fill("not-tested"));
   });
 });

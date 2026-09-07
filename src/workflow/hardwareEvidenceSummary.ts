@@ -1,4 +1,5 @@
 import type { HardwareReport } from "../domain/types";
+import { classifyNetworkDevice } from "../engine/deviceIdentity";
 
 export interface HardwareEvidenceSummary {
   reportVersion: string;
@@ -10,14 +11,20 @@ export interface HardwareEvidenceSummary {
   bluetoothCount: number;
   laptopClues: string[];
   gaps: string[];
+  provenance: "unmarked" | "manual";
+  manualFieldCount: number;
 }
 
 function wirelessCount(report: HardwareReport): number {
-  return report.network.filter((device) => /wireless|wi-?fi|wlan|802\.11/i.test(device.name)).length;
+  return report.network.filter(
+    (device) => classifyNetworkDevice(device).kind === "wireless",
+  ).length;
 }
 
 export function summarizeHardwareEvidence(report: HardwareReport): HardwareEvidenceSummary {
   const evidence = report.evidence;
+  const manualFieldCount = report.provenance?.manualFields.length ?? 0;
+  const provenance = manualFieldCount > 0 ? "manual" : "unmarked";
   if (!evidence) {
     return {
       reportVersion: "v1 · 基础身份",
@@ -29,6 +36,8 @@ export function summarizeHardwareEvidence(report: HardwareReport): HardwareEvide
       bluetoothCount: 0,
       laptopClues: [],
       gaps: ["芯片组/父 PCI", "存储与 USB 控制器", "独立蓝牙", "笔记本 PnP 线索"],
+      provenance,
+      manualFieldCount,
     };
   }
 
@@ -68,5 +77,7 @@ export function summarizeHardwareEvidence(report: HardwareReport): HardwareEvide
     bluetoothCount: evidence.bluetooth.length,
     laptopClues,
     gaps,
+    provenance,
+    manualFieldCount,
   };
 }

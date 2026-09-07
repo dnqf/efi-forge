@@ -3,6 +3,7 @@ import {
   registerCompatibilityRules,
   type CompatibilityRuleDefinition,
 } from "./ruleRegistry";
+import { intelWirelessDeviceIds } from "./networkIdentities";
 
 const guide = "https://dortania.github.io/OpenCore-Install-Guide/";
 
@@ -317,7 +318,7 @@ const definitions: CompatibilityRuleDefinition[] = [
     macOS: ["13", "14", "15"],
     selector: {
       vendorIds: ["8086"],
-      deviceIds: ["08B1", "08B2", "095A", "24F3", "24FD", "A370", "2723", "2725", "51F0"],
+      deviceIds: [...intelWirelessDeviceIds],
     },
     message: "PCI ID 命中常见 Intel 无线系列；具体支持仍取决于芯片修订和目标 macOS 分支。",
     action: "只选择 itlwm 或 AirportItlwm 其中一条路径；蓝牙固件另行核对，不自动加入无线组件。",
@@ -496,11 +497,11 @@ const experimental = (
 
 const metadata: Record<string, RuleRegistryMetadata> = {
   "firmware.uefi.required": reviewed(200, ["firmware-mode"], ["sample.uefi"]),
-  "firmware.legacy.blocked": experimental(200, ["firmware-mode"], ["sample.legacy"], [
+  "firmware.legacy.blocked": experimental(200, ["firmware-mode"], ["case.matrix.firmware-legacy.positive"], [
     { type: "manual-review", value: "legacy-openduet-path" },
   ]),
-  "cpu.intel.coffee-lake": reviewed(200, ["cpu-generation"], ["intel.coffee-lake.z390"]),
-  "cpu.intel.comet-lake": reviewed(200, ["cpu-generation"], ["intel.comet-lake.z490"]),
+  "cpu.intel.coffee-lake": reviewed(200, ["cpu-generation"], ["case.matrix.cpu-coffee.positive"]),
+  "cpu.intel.comet-lake": reviewed(200, ["cpu-generation"], ["case.matrix.cpu-comet.positive"]),
   "cpu.intel.post-comet.manual": experimental(
     170,
     ["cpu-generation"],
@@ -516,23 +517,23 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "cpu.intel.kaby-lake-laptop": experimental(190, ["cpu-generation"], ["thinkpad.t470"]),
   "cpu.intel.legacy-laptop": experimental(180, ["cpu-generation"], ["thinkpad.t450"]),
   "cpu.intel.ice-lake-laptop": experimental(180, ["cpu-generation"], ["thinkpad.ice-lake"]),
-  "cpu.amd.zen": experimental(180, ["cpu-generation"], ["amd.zen3.b450"]),
+  "cpu.amd.zen": experimental(180, ["cpu-generation"], ["case.matrix.cpu-amd-zen.positive"]),
   "gpu.intel.uhd630": reviewed(
     240,
     ["pci-vendor-id", "device-name"],
-    ["intel.uhd630"],
+    ["case.auto.intel-uhd630.direct"],
     [{ type: "add-component", value: "WhateverGreen.kext" }],
   ),
   "gpu.intel.hd-uhd620-laptop": experimental(
     230,
     ["pci-vendor-id", "device-name"],
-    ["thinkpad.intel.uhd620"],
+    ["case.auto.intel-uhd620.direct"],
     [{ type: "add-component", value: "WhateverGreen.kext" }],
   ),
   "gpu.amd.polaris-2048sp.blocked": reviewed(
     400,
     ["pci-vendor-id", "pci-device-id"],
-    ["amd.rx580-2048sp.6fdf"],
+    ["case.risk.rx580-2048sp.direct"],
     [{ type: "manual-review", value: "unsupported-external-gpu" }],
   ),
   "gpu.amd.lexa-rx550.blocked": reviewed(
@@ -544,13 +545,13 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "gpu.amd.polaris.native": reviewed(
     400,
     ["pci-vendor-id", "pci-device-id"],
-    ["amd.rx580.67df"],
+    ["case.auto.amd-polaris.direct"],
     [{ type: "add-component", value: "WhateverGreen.kext" }],
   ),
   "gpu.amd.navi-native": reviewed(
     400,
     ["pci-vendor-id", "pci-device-id"],
-    ["amd.navi.native"],
+    ["case.auto.amd-navi.direct"],
     [
       { type: "add-component", value: "WhateverGreen.kext" },
       { type: "add-boot-arg", value: "agdpmod=pikera" },
@@ -589,7 +590,7 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "gpu.nvidia.turing.blocked": reviewed(
     230,
     ["pci-vendor-id", "device-name"],
-    ["nvidia.rtx30"],
+    ["case.matrix.gpu-nvidia.positive"],
     [{ type: "manual-review", value: "unsupported-external-gpu" }],
   ),
   "gpu.nvidia.thinkpad-dgpu.blocked": reviewed(
@@ -601,13 +602,13 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "gpu.nvidia.modern-macos.blocked": reviewed(
     100,
     ["pci-vendor-id"],
-    ["nvidia.generic-modern-macos"],
+    ["case.matrix.gpu-nvidia-generic.positive"],
     [{ type: "manual-review", value: "unsupported-external-gpu" }],
   ),
   "network.intel.i219": reviewed(
     230,
     ["pci-vendor-id", "device-name"],
-    ["network.intel.i219"],
+    ["case.auto.network-i219.direct"],
     [{ type: "add-component", value: "IntelMausi.kext" }],
   ),
   "network.intel.wireless-laptop": experimental(
@@ -619,7 +620,7 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "network.intel.wireless-exact": experimental(
     400,
     ["pci-vendor-id", "pci-device-id"],
-    ["network.intel.wireless.2723"],
+    ["case.matrix.wireless-direct.positive"],
     [{ type: "manual-review", value: "select-one-intel-wireless-stack" }],
   ),
   "network.intel.wireless-tahoe.manual": experimental(
@@ -643,13 +644,13 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "network.realtek.rtl8125": reviewed(
     400,
     ["pci-vendor-id", "pci-device-id"],
-    ["network.realtek.8125"],
+    ["case.auto.network-rtl8125.direct"],
     [{ type: "add-component", value: "LucyRTL8125Ethernet.kext" }],
   ),
   "network.realtek.rtl8111": reviewed(
     400,
     ["pci-vendor-id", "pci-device-id"],
-    ["network.realtek.8168"],
+    ["case.auto.network-rtl8111.direct"],
     [{ type: "add-component", value: "RealtekRTL8111.kext" }],
   ),
   "network.intel.i211.partial": experimental(
@@ -661,7 +662,7 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "audio.realtek.applealc-candidate": experimental(
     230,
     ["pci-vendor-id", "device-name"],
-    ["audio.realtek.alc"],
+    ["case.auto.audio-alc.direct"],
     [{ type: "add-component", value: "AppleALC.kext" }],
   ),
   "audio.realtek.tahoe.manual": experimental(
@@ -679,7 +680,7 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "storage.samsung.pm98x.blocked": reviewed(
     160,
     ["device-name"],
-    ["storage.samsung.pm991"],
+    ["case.risk.pm981.name"],
     [{ type: "manual-review", value: "unsafe-install-target" }],
   ),
   "storage.micron.2200s.blocked": reviewed(
@@ -703,7 +704,7 @@ const metadata: Record<string, RuleRegistryMetadata> = {
   "storage.intel.600p.partial": reviewed(
     140,
     ["device-name"],
-    ["storage.intel.600p"],
+    ["case.matrix.storage-600p.positive"],
     [{ type: "add-note", value: "Intel 600p 不建议作为安装目标。" }],
   ),
 };

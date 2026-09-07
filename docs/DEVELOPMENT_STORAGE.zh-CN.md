@@ -24,7 +24,7 @@ powershell -ExecutionPolicy Bypass -File scripts/invoke-dev-workspace.ps1 -Task 
 
 脚本只在运行期间设置 `TEMP`、`TMP`、`npm_config_cache` 和 `CARGO_TARGET_DIR`，退出时恢复原值，不会永久修改 Windows 的全局环境变量。`desktop-build` 与 `full` 会先检查目标盘至少还有 12 GB 可用空间。
 
-这只是开发构建目录配置，不会迁移安装后的应用缓存、用户选择的 EFI 输出目录、Codex 会话或源码。安装后的应用仍使用系统临时目录保存组件缓存；不能据此承诺 C 盘完全不再产生数据。
+这只是开发构建目录配置，不会迁移用户选择的 EFI 输出目录、Codex 会话或源码。自 v0.1.15 起，安装后的桌面应用可在高级设置中为后续任务选择独立的运行时缓存位置；默认位置仍位于系统临时目录。切换只影响新任务，不迁移或删除旧缓存，因此不能据此承诺 C 盘完全不再产生数据。
 
 ## 可恢复性
 
